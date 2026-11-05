@@ -33,4 +33,5 @@ printf '\006\320\361\011\001\241\001\011\040\025\000\046\377\000\165\010\225\100
 
 ln -sf "$F" "$G/configs/c.1/hid.usb0"
 printf '%s\n' "$UDC" > "$G/UDC"
-echo "PiFIDO: USB HID gadget attached to $UDC" >/dev/console
+STATE=$(cat "/sys/class/udc/$UDC/state" 2>/dev/null || printf 'unknown')
+echo "PiFIDO: USB HID gadget attached to $UDC (state=$STATE)" >/dev/console

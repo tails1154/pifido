@@ -87,7 +87,16 @@ fi
 
 PIFIDO_STORE="$DATA/credentials.json"
 export PIFIDO_STORE
-/usr/bin/pifido-native --hid /dev/hidg0 2>&1 | tee "$DATA/native.log" >/dev/console
+/usr/bin/pifido-native --hid /dev/hidg0 >> "$DATA/native.log" 2>&1 &
+AUTH_PID=$!
+sleep 1
+if kill -0 "$AUTH_PID" 2>/dev/null; then
+    UDC_STATE=$(cat "/sys/class/udc/$(ls /sys/class/udc | head -n 1)/state" 2>/dev/null || printf 'unknown')
+    echo "PiFIDO native ready; waiting for CTAPHID (UDC state=$UDC_STATE)" >/dev/console
+else
+    echo 'PiFIDO native authenticator failed to start' >/dev/console
+fi
+wait "$AUTH_PID"
 RC=$?
 echo "PiFIDO native authenticator exited rc=$RC; halted for diagnostics" >/dev/console 2>/dev/null || true
 while :; do sleep 60; done
