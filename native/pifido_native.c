@@ -18,6 +18,7 @@
 #include <sys/random.h>
 #include <unistd.h>
 #include <openssl/x509.h>
+#include <openssl/sha.h>
 
 #include "store.h"
 #include "crypto.h"
@@ -128,6 +129,59 @@ struct hid_state {
 
 static uint32_t assigned_cid = 0;
 static uint8_t device_aaguid[16];
+
+struct credential_management_state {
+    int rp_index;
+    int credential_index;
+    char rp_id[256];
+    int active_rp;
+    int active_credentials;
+};
+
+static struct credential_management_state management_state;
+
+static size_t count_unique_rps(const struct pifido_store *store) {
+    size_t count = 0;
+    for (size_t i = 0; i < store->count; ++i) {
+        int seen = 0;
+        for (size_t j = 0; j < i; ++j)
+            if (strcmp(store->credentials[i].rp_id, store->credentials[j].rp_id) == 0) seen = 1;
+        if (!seen) ++count;
+    }
+    return count;
+}
+
+static int get_rp_at(const struct pifido_store *store, size_t index,
+                     char out[256]) {
+    size_t seen = 0;
+    for (size_t i = 0; i < store->count; ++i) {
+        int duplicate = 0;
+        for (size_t j = 0; j < i; ++j)
+            if (strcmp(store->credentials[i].rp_id, store->credentials[j].rp_id) == 0) duplicate = 1;
+        if (!duplicate && seen++ == index) { strcpy(out, store->credentials[i].rp_id); return 0; }
+    }
+    return -1;
+}
+
+static int public_key_cose(const struct pifido_credential *credential,
+                           struct cbor_writer *w) {
+    const unsigned char *p = credential->public_key_der;
+    EVP_PKEY *key = d2i_PUBKEY(NULL, &p, (long)credential->public_key_der_len);
+    EC_KEY *ec = key ? EVP_PKEY_get1_EC_KEY(key) : NULL;
+    const EC_GROUP *group = ec ? EC_KEY_get0_group(ec) : NULL;
+    const EC_POINT *point = ec ? EC_KEY_get0_public_key(ec) : NULL;
+    BIGNUM *x = BN_new(), *y = BN_new();
+    uint8_t xb[32], yb[32]; int ok = 0;
+    if (group && point && x && y && EC_POINT_get_affine_coordinates(group, point, x, y, NULL) == 1 &&
+        BN_bn2binpad(x, xb, 32) == 32 && BN_bn2binpad(y, yb, 32) == 32 &&
+        cbor_write_map_len(w, 5) == 0 && cbor_write_uint(w, 1) == 0 && cbor_write_uint(w, 2) == 0 &&
+        cbor_write_uint(w, 3) == 0 && cbor_write_int(w, -7) == 0 && cbor_write_int(w, -1) == 0 &&
+        cbor_write_uint(w, 1) == 0 && cbor_write_int(w, -2) == 0 && cbor_write_bytes(w, xb, 32) == 0 &&
+        cbor_write_int(w, -3) == 0 && cbor_write_bytes(w, yb, 32) == 0) ok = 1;
+    BN_free(x); BN_free(y); EC_KEY_free(ec); EVP_PKEY_free(key);
+    OPENSSL_cleanse(xb, sizeof xb); OPENSSL_cleanse(yb, sizeof yb);
+    return ok ? 0 : -1;
+}
 
 static int ensure_store_file(const char *path) {
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -350,8 +404,47 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
                 if (cbor_read_bytes(&cr, &auth, &auth_len) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
             } else if (cbor_skip(&cr) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
         }
-        if (!have_sub || !have_protocol || !auth || params_end <= params_start) {
+        if (!have_sub || ((subcommand != 3 && subcommand != 5) &&
+                          (!have_protocol || !auth || params_end <= params_start))) {
             response[0] = 0x14; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
+        if (subcommand == 3) {
+            char rp[256];
+            if (!management_state.active_rp || get_rp_at(store, (size_t)management_state.rp_index, rp) != 0) {
+                response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            management_state.rp_index++;
+            uint8_t hash[32]; SHA256((const unsigned char *)rp, strlen(rp), hash);
+            struct cbor_writer w = {response + 1, sizeof response - 1, 0};
+            if (cbor_write_map_len(&w, 3) || cbor_write_uint(&w, 3) || cbor_write_map_len(&w, 1) ||
+                cbor_write_text(&w, "id", 2) || cbor_write_text(&w, rp, strlen(rp)) ||
+                cbor_write_uint(&w, 4) || cbor_write_bytes(&w, hash, sizeof hash) ||
+                cbor_write_uint(&w, 5) || cbor_write_uint(&w, count_unique_rps(store))) {
+                response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
+        }
+        if (subcommand == 5) {
+            if (!management_state.active_credentials || management_state.credential_index < 0) {
+                response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            size_t idx = (size_t)management_state.credential_index;
+            while (idx < store->count && strcmp(store->credentials[idx].rp_id, management_state.rp_id) != 0) ++idx;
+            if (idx >= store->count) { management_state.active_credentials = 0; response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            struct pifido_credential *c = &store->credentials[idx];
+            struct cbor_writer w = {response + 1, sizeof response - 1, 0};
+            if (cbor_write_map_len(&w, 4) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 1) ||
+                cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, c->user_id, c->user_id_len) ||
+                cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "type", 4) ||
+                cbor_write_text(&w, "public-key", 10) || cbor_write_text(&w, "id", 2) ||
+                cbor_write_bytes(&w, c->credential_id, c->credential_id_len) ||
+                cbor_write_uint(&w, 8) || public_key_cose(c, &w) || cbor_write_uint(&w, 9)) {
+                response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            size_t total = 0; for (size_t i = 0; i < store->count; ++i) if (strcmp(store->credentials[i].rp_id, management_state.rp_id) == 0) ++total;
+            if (cbor_write_uint(&w, total) != 0) { response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            management_state.credential_index = (int)idx + 1;
+            response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
         }
         uint8_t auth_data[1 + 2048];
         if (params_end - params_start > sizeof auth_data - 1) { response[0] = 0x03; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
@@ -367,6 +460,46 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
                 cbor_write_uint(&w, 2) || cbor_write_uint(&w, PIFIDO_MAX_CREDENTIALS - store->count)) {
                 response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
             }
+            response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
+        }
+        if (subcommand == 2) {
+            management_state.rp_index = 0; management_state.active_rp = 1;
+            char rp[256];
+            if (get_rp_at(store, 0, rp) != 0) { response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            uint8_t hash[32]; SHA256((const unsigned char *)rp, strlen(rp), hash);
+            struct cbor_writer w = {response + 1, sizeof response - 1, 0};
+            if (cbor_write_map_len(&w, 3) || cbor_write_uint(&w, 3) || cbor_write_map_len(&w, 1) ||
+                cbor_write_text(&w, "id", 2) || cbor_write_text(&w, rp, strlen(rp)) ||
+                cbor_write_uint(&w, 4) || cbor_write_bytes(&w, hash, sizeof hash) ||
+                cbor_write_uint(&w, 5) || cbor_write_uint(&w, count_unique_rps(store))) {
+                response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            management_state.rp_index = 1;
+            response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
+        }
+        if (subcommand == 4) {
+            struct cbor_reader pr = {p + 1 + params_start, params_end - params_start, 0};
+            size_t pn; const uint8_t *rp_hash = NULL; size_t rp_hash_len = 0;
+            if (cbor_read_map_len(&pr, &pn) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            for (size_t i = 0; i < pn; ++i) { uint64_t key; if (cbor_read_uint(&pr, &key) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); } if (key == 1) { if (cbor_read_bytes(&pr, &rp_hash, &rp_hash_len) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); } } else if (cbor_skip(&pr) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); } }
+            if (!rp_hash || rp_hash_len != 32) { response[0] = 0x14; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            management_state.active_credentials = 0;
+            for (size_t i = 0; i < store->count; ++i) { uint8_t h[32]; SHA256((const unsigned char *)store->credentials[i].rp_id, strlen(store->credentials[i].rp_id), h); if (memcmp(h, rp_hash, 32) == 0) { strncpy(management_state.rp_id, store->credentials[i].rp_id, sizeof management_state.rp_id - 1); management_state.credential_index = (int)i; management_state.active_credentials = 1; break; } }
+            if (!management_state.active_credentials) { response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            size_t idx = (size_t)management_state.credential_index;
+            struct pifido_credential *c = &store->credentials[idx];
+            size_t total = 0; for (size_t i = 0; i < store->count; ++i) if (strcmp(store->credentials[i].rp_id, management_state.rp_id) == 0) ++total;
+            struct cbor_writer w = {response + 1, sizeof response - 1, 0};
+            if (cbor_write_map_len(&w, 4) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 1) ||
+                cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, c->user_id, c->user_id_len) ||
+                cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "type", 4) ||
+                cbor_write_text(&w, "public-key", 10) || cbor_write_text(&w, "id", 2) ||
+                cbor_write_bytes(&w, c->credential_id, c->credential_id_len) ||
+                cbor_write_uint(&w, 8) || public_key_cose(c, &w) || cbor_write_uint(&w, 9) ||
+                cbor_write_uint(&w, total)) {
+                response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            management_state.credential_index = (int)idx + 1;
             response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
         }
         if (subcommand == 6) {
