@@ -1,0 +1,7 @@
+PiFIDO runtime data lives in /data/pifido on the second ext4 partition.
+Credential updates are serialized, fsync'd, and atomically replaced before
+the CTAP success response is sent.
+
+Physical user presence is enabled through the two-wire GPIO26-to-GND contact.
+The contact must be released before each request and is debounced and timed
+out. Automatic user presence is disabled in the production image.

@@ -1,0 +1,10 @@
+#!/bin/bash
+set -eu
+mount -t proc proc /proc || true
+mount -t sysfs sysfs /sys || true
+mount -t devtmpfs devtmpfs /dev || true
+mount -t configfs none /sys/kernel/config || true
+modprobe dwc2 dr_mode=peripheral || true
+modprobe libcomposite
+modprobe usb_f_hid
+exec /usr/local/lib/pifido/pifido-lite-init.sh

@@ -1,0 +1,12 @@
+start_file=start.elf
+fixup_file=fixup.dat
+kernel=zImage
+disable_overscan=1
+gpu_mem=16
+dtoverlay=dwc2,dr_mode=peripheral
+boot_delay=0
+boot_delay_ms=0
+disable_splash=1
+hdmi_group=2
+hdmi_mode=82
+config_hdmi_boost=4

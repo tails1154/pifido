@@ -1,0 +1,22 @@
+# Local Buildroot workspaces and generated downloads/toolchains
+.buildroot-*/
+.gradle-home/
+.java-tmp/
+build-tmp-archive/
+
+# Generated images and extracted test artifacts (large/binary)
+output/
+alt-lite/
+update-initramfs/
+pifido-update.cpio.gz
+
+# Java build output
+vendor/pi-zero-security-key/.gradle/
+vendor/pi-zero-security-key/build/
+vendor/pi-zero-security-key/.classpath
+vendor/pi-zero-security-key/.project
+vendor/pi-zero-security-key/.settings/
+
+# Editor/OS files
+.DS_Store
+*.swp

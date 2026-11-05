@@ -1,0 +1,60 @@
+#!/bin/sh
+set -u
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+DATA=/data/pifido
+
+echo 'PiFIDO init: mounts' >/dev/console 2>/dev/null || true
+mountpoint -q /sys || mount -t sysfs sysfs /sys || true
+mountpoint -q /proc || mount -t proc proc /proc || true
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev || true
+mountpoint -q /sys/kernel/config || {
+    mkdir -p /sys/kernel/config
+    mount -t configfs configfs /sys/kernel/config || true
+}
+
+mount -a 2>/dev/null || true
+mkdir -p /dev/ffs-authui
+mountpoint -q /dev/ffs-authui || mount -t functionfs authui /dev/ffs-authui || true
+mkdir -p /data
+if ! mountpoint -q /data; then
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -b /dev/mmcblk0p2 ] && mount -t ext4 -o noatime,commit=1 /dev/mmcblk0p2 /data 2>/dev/null; then
+            break
+        fi
+        sleep 0.2
+    done
+fi
+
+# Optional two-wire presence contact: BCM GPIO26 to a nearby GND pin.
+# The Java verifier uses the internal pull-up and treats a low level as a
+# debounced press. Exporting is harmless when automatic mode is selected.
+if [ -d /sys/class/gpio ] && [ ! -d /sys/class/gpio/gpio26 ]; then
+    printf '26' > /sys/class/gpio/export 2>/dev/null || true
+fi
+if [ -e /sys/class/gpio/gpio26/direction ]; then
+    printf 'in' > /sys/class/gpio/gpio26/direction 2>/dev/null || true
+fi
+
+mkdir -p "$DATA"
+chmod 700 "$DATA"
+
+while :; do
+    UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+    if [ -n "$UDC" ]; then
+        echo "PiFIDO init: UDC=$UDC" >/dev/console 2>/dev/null || true
+        break
+    fi
+    echo 'PiFIDO init: waiting for USB device controller' >/dev/console 2>/dev/null || true
+    sleep 1
+done
+
+while :; do
+    echo 'PiFIDO init: starting authenticator' >/dev/console 2>/dev/null || true
+    LOG="$DATA/java.log"
+    /usr/lib/zulu/bin/java -Xms16m -Xmx64m -XX:TieredStopAtLevel=1 -Djava.io.tmpdir=/tmp -Dpifido.requireButton=true -jar /usr/lib/pifido/pifido.jar >"$LOG" 2>&1
+    RC=$?
+    tail -40 "$LOG" >/dev/console 2>/dev/null || true
+    echo "PiFIDO Java exited rc=$RC; retrying" >/dev/console 2>/dev/null || true
+    sleep 2
+done
