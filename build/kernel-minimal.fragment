@@ -109,7 +109,9 @@ CONFIG_HIBERNATION=n
 CONFIG_THERMAL=n
 CONFIG_WATCHDOG=n
 CONFIG_RTC_CLASS=n
-CONFIG_LEDS_CLASS=n
+# Keep the small LED class core because the bcmrpi defconfig enables the
+# activity-power trigger; no LED hardware drivers are enabled for runtime.
+CONFIG_LEDS_CLASS=y
 CONFIG_GPIO_SYSFS=n
 
 CONFIG_DEBUG_KERNEL=n
