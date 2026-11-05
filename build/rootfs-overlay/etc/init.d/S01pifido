@@ -30,7 +30,7 @@ fi
 # The Java verifier uses the internal pull-up and treats a low level as a
 # debounced press. Exporting is harmless when automatic mode is selected.
 if [ -d /sys/class/gpio ] && [ ! -d /sys/class/gpio/gpio26 ]; then
-    printf '26' > /sys/class/gpio/export 2>/dev/null || true
+    printf '26\n' > /sys/class/gpio/export 2>/dev/null || true
 fi
 if [ -e /sys/class/gpio/gpio26/direction ]; then
     printf 'in' > /sys/class/gpio/gpio26/direction 2>/dev/null || true
