@@ -36,6 +36,7 @@ public abstract class GetInfoResponse {
 				.addMap()
 					.putArray(VERSIONS_KEY)
 						.add(version().name())
+						.add(Version.U2F_V2.name())
 					.end()
 					.put(AAGUID_KEY, aaguid())
 					.putMap(OPTIONS_KEY)
