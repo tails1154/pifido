@@ -10,6 +10,7 @@ pifido-native: pifido_native.c store.c store.h
 
 test: pifido-native store-test
 	./pifido-native --self-test
+	./pifido-native --check-store test_credentials.json
 	./store-test
 
 store-test: store_test.c store.c store.h

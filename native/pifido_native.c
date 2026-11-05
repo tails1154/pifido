@@ -15,6 +15,8 @@
 #include <sys/random.h>
 #include <unistd.h>
 
+#include "store.h"
+
 #define HID_REPORT_SIZE 64
 #define CTAPHID_INIT 0x86
 #define CTAPHID_PING 0x81
@@ -154,6 +156,12 @@ static int self_test(void) {
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--self-test") == 0)
         return self_test() ? 0 : 1;
+    if (argc == 3 && strcmp(argv[1], "--check-store") == 0) {
+        struct pifido_store store;
+        if (pifido_store_load(argv[2], &store) != 0) return 1;
+        printf("loaded %zu credentials\n", store.count);
+        return 0;
+    }
     if (argc != 3 || strcmp(argv[1], "--hid") != 0) {
         fprintf(stderr, "usage: %s --hid /dev/hidg0\n", argv[0]);
         return 2;
