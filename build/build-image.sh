@@ -9,6 +9,11 @@ if [ ! -d "$BUILDROOT_DIR" ]; then
 fi
 
 mkdir -p "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/pifido"
+# The build directory may have been used by the former Java image.  Remove
+# only those known generated artifacts so they cannot survive into a native
+# rebuild; no host or persistent credential data is touched.
+rm -rf "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu"
+rm -f "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/pifido/pifido.jar"
 cp -a "$PROJECT_ROOT/build/rootfs-overlay/." "$BUILDROOT_DIR/board/pifido-overlay/"
 mkdir -p "$BUILDROOT_DIR/package/pifido-native"
 cp -a "$PROJECT_ROOT/buildroot-package/pifido-native/." "$BUILDROOT_DIR/package/pifido-native/"
@@ -25,6 +30,7 @@ BR2_TARGET_ROOTFS_CPIO_GZIP=y
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 BR2_ROOTFS_OVERLAY="$BUILDROOT_DIR/board/pifido-overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$PROJECT_ROOT/build/rootfs-post-build.sh"
 BR2_PACKAGE_RPI_FIRMWARE_CONFIG_FILE="$PROJECT_ROOT/build/rpi-config.txt"
 BR2_PACKAGE_OPENJDK=n
 BR2_PACKAGE_PYTHON3=n
