@@ -441,6 +441,11 @@ uint8_t pifido_pin_check_request(struct pifido_pin_state *s, uint8_t command,
     }
     if (r.pos != r.len) return CTAP_INVALID_CBOR;
     if (!pin_auth) return uv ? CTAP_PIN_REQUIRED : CTAP_OK;
+    /* Chromium's GetTouch() probe deliberately sends an empty pinAuth.  CTAP
+     * treats this as an invalid PIN authorization, and Chromium uses 0x33 as
+     * the signal that the authenticator has responded to the probe.  Returning
+     * missing-parameter here leaves PIN-management flows waiting forever. */
+    if (auth_len == 0) return CTAP_PIN_AUTH_INVALID;
     if (!has_protocol || !client_hash || hash_len != 32 || auth_len != 16)
         return CTAP_MISSING_PARAMETER;
     if (protocol != PIN_PROTOCOL_ONE) return CTAP_INVALID_PARAMETER;
