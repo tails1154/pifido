@@ -4,7 +4,9 @@
 # explicitly removed because this image has no network, host USB, display,
 # camera, audio, or wireless runtime.
 
-CONFIG_MODULES=n
+# Leave module support enabled so unrelated defconfig `m` options remain
+# out-of-tree modules instead of being promoted into the built-in zImage.
+CONFIG_MODULES=y
 CONFIG_WIRELESS=n
 CONFIG_CFG80211=n
 CONFIG_MAC80211=n
@@ -38,7 +40,9 @@ CONFIG_USB_HID=n
 # USB peripheral-only path.  Keep DWC2, libcomposite, ConfigFS, and HID;
 # remove host controllers, host protocol drivers, and alternate gadgets.
 CONFIG_USB_DWC2_DUAL_ROLE=n
+CONFIG_USB_DWC2=y
 CONFIG_USB_DWC2_PERIPHERAL=y
+CONFIG_USB_ROLE_SWITCH=y
 CONFIG_USB_HOST=n
 CONFIG_USB_DWCOTG=n
 CONFIG_USB_ACM=n
@@ -74,7 +78,14 @@ CONFIG_USB_CONFIGFS_ECM_SUBSET=n
 CONFIG_USB_CONFIGFS_RNDIS=n
 CONFIG_USB_CONFIGFS_EEM=n
 CONFIG_USB_CONFIGFS_F_HID=y
+# CONFIG_USB_CONFIGFS_SERIAL is not set
+# CONFIG_USB_CONFIGFS_ACM is not set
+# CONFIG_USB_CONFIGFS_OBEX is not set
+# CONFIG_USB_CONFIGFS_MASS_STORAGE is not set
+# CONFIG_USB_CONFIGFS_F_LB_SS is not set
+# CONFIG_USB_CONFIGFS_F_PRINTER is not set
 CONFIG_USB_F_HID=y
+CONFIG_USB_GADGETFS=n
 CONFIG_USB_LIBCOMPOSITE=y
 CONFIG_USB_CONFIGFS=y
 CONFIG_USB_GADGET=y
