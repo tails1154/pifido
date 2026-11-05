@@ -17,6 +17,8 @@
 
 #include "store.h"
 #include "crypto.h"
+#include "ctap.h"
+#include "cbor.h"
 
 #define HID_REPORT_SIZE 64
 #define CTAPHID_INIT 0x86
@@ -34,6 +36,7 @@
 #define CTAPHID_BROADCAST_CID 0xffffffffu
 #define CTAP2_ERR_INVALID_COMMAND 0x01
 #define CTAP2_ERR_INVALID_CBOR 0x12
+#define CTAP2_ERR_NO_CREDENTIALS 0x2e
 
 struct hid_state {
     uint32_t cid;
@@ -109,7 +112,8 @@ static size_t get_info(uint8_t *out, size_t cap) {
     return sizeof info;
 }
 
-static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n) {
+static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
+                         struct pifido_store *store, const char *store_path) {
     uint8_t response[256];
     size_t r = 0;
     if (n == 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
@@ -119,12 +123,23 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n) {
         response[0] = 0;
         return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
     }
+    if (p[0] == 0x02) {
+        r = 0;
+        if (pifido_get_assertion(p + 1, n - 1, store, store_path,
+                                 response + 1, sizeof response - 1, &r) == 0) {
+            response[0] = 0;
+            return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
+        }
+        response[0] = CTAP2_ERR_NO_CREDENTIALS;
+        return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+    }
     response[0] = CTAP2_ERR_INVALID_COMMAND;
     return write_report(fd, cid, CTAPHID_CBOR, response, 1);
 }
 
 static int dispatch_hid(int fd, uint32_t cid, uint8_t command,
-                        const uint8_t *p, size_t n) {
+                        const uint8_t *p, size_t n, struct pifido_store *store,
+                        const char *store_path) {
     uint8_t response[7609];
     if (command == CTAPHID_INIT) {
         if (n != 8) {
@@ -141,7 +156,7 @@ static int dispatch_hid(int fd, uint32_t cid, uint8_t command,
     if (command == CTAPHID_PING)
         return write_report(fd, cid, CTAPHID_PING, p, n);
     if (command == CTAPHID_CBOR)
-        return dispatch_cbor(fd, cid, p, n);
+        return dispatch_cbor(fd, cid, p, n, store, store_path);
     {
         uint8_t e = CTAPHID_ERR_INVALID_CMD;
         return write_report(fd, cid, CTAPHID_ERROR, &e, 1);
@@ -161,6 +176,10 @@ int main(int argc, char **argv) {
         struct pifido_store store;
         if (pifido_store_load(argv[2], &store) != 0) return 1;
         printf("loaded %zu credentials\n", store.count);
+        if (store.count) printf("first key lengths: private=%zu public=%zu id=%zu\n",
+                                store.credentials[0].private_key_der_len,
+                                store.credentials[0].public_key_der_len,
+                                store.credentials[0].credential_id_len);
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "--crypto-test") == 0) {
@@ -170,11 +189,30 @@ int main(int argc, char **argv) {
         size_t signature_len = 0;
         if (pifido_store_load(argv[2], &store) != 0 || store.count == 0)
             return 1;
-        if (pifido_sign_sha256(&store.credentials[0], digest, signature,
-                               sizeof signature, &signature_len) != 0)
+        int sign_rc = pifido_sign_sha256(&store.credentials[0], digest, signature,
+                               sizeof signature, &signature_len);
+        if (sign_rc != 0)
             return 1;
         return pifido_verify_sha256(&store.credentials[0], digest, signature,
                                     signature_len) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && strcmp(argv[1], "--assertion-test") == 0) {
+        struct pifido_store store;
+        uint8_t request[512], response[1024], hash[32] = {0};
+        size_t response_len = 0;
+        if (pifido_store_load(argv[2], &store) != 0 || store.count == 0) return 1;
+        struct cbor_writer w = { request, sizeof request, 0 };
+        struct pifido_credential *c = &store.credentials[0];
+        if (cbor_write_map_len(&w, 3) != 0 || cbor_write_uint(&w, 1) != 0 ||
+            cbor_write_text(&w, c->rp_id, strlen(c->rp_id)) != 0 ||
+            cbor_write_uint(&w, 2) != 0 || cbor_write_bytes(&w, hash, sizeof hash) != 0 ||
+            cbor_write_uint(&w, 3) != 0 || cbor_write_array_len(&w, 1) != 0 ||
+            cbor_write_map_len(&w, 1) != 0 || cbor_write_uint(&w, 2) != 0 ||
+            cbor_write_bytes(&w, c->credential_id, c->credential_id_len) != 0) return 1;
+        if (pifido_get_assertion(request, w.pos, &store, argv[2], response,
+                                 sizeof response, &response_len) != 0) return 1;
+        printf("assertion response %zu bytes\n", response_len);
+        return 0;
     }
     if (argc != 3 || strcmp(argv[1], "--hid") != 0) {
         fprintf(stderr, "usage: %s --hid /dev/hidg0\n", argv[0]);
@@ -183,6 +221,10 @@ int main(int argc, char **argv) {
     int fd = open(argv[2], O_RDWR | O_CLOEXEC);
     if (fd < 0) { perror("open HID endpoint"); return 1; }
     struct hid_state s = { .cid = CTAPHID_BROADCAST_CID };
+    const char *store_path = getenv("PIFIDO_STORE");
+    if (!store_path) store_path = "/data/pifido/credentials.json";
+    struct pifido_store store;
+    if (pifido_store_load(store_path, &store) != 0) memset(&store, 0, sizeof store);
     uint8_t report[HID_REPORT_SIZE];
     for (;;) {
         ssize_t n = read(fd, report, sizeof report);
@@ -202,7 +244,7 @@ int main(int argc, char **argv) {
             s.next_seq = 0;
             memcpy(s.payload, report + 7, s.received);
             if (s.received == s.expected)
-                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received);
+                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path);
             if (s.command == CTAPHID_INIT && assigned_cid != 0)
                 s.cid = assigned_cid;
         } else if (type == s.next_seq && s.received < s.expected) {
@@ -212,7 +254,7 @@ int main(int argc, char **argv) {
             s.received += (uint16_t)ncopy;
             s.next_seq++;
             if (s.received == s.expected)
-                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received);
+                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path);
         }
     }
     close(fd);
