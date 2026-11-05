@@ -10,6 +10,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static char store_error_text[128] = "none";
+
+static int store_fail(const char *reason) {
+    snprintf(store_error_text, sizeof store_error_text, "%s", reason);
+    return -1;
+}
+
+const char *pifido_store_last_error(void) {
+    return store_error_text;
+}
+
 static int b64_value(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -298,33 +309,33 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
                                 const uint8_t *private_key_der, size_t private_key_der_len,
                                 const uint8_t *public_key_der, size_t public_key_der_len) {
     FILE *f = fopen(path, "rb");
-    if (!f) return -1;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
-    long size = ftell(f); if (size <= 0 || size > 4 * 1024 * 1024) { fclose(f); return -1; }
+    if (!f) return store_fail("add:open-store");
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return store_fail("add:seek-end"); }
+    long size = ftell(f); if (size <= 0 || size > 4 * 1024 * 1024) { fclose(f); return store_fail("add:bad-size"); }
     rewind(f);
-    char *json = calloc((size_t)size + 1, 1); if (!json) { fclose(f); return -1; }
+    char *json = calloc((size_t)size + 1, 1); if (!json) { fclose(f); return store_fail("add:alloc-json"); }
     size_t got = fread(json, 1, (size_t)size, f); fclose(f);
-    if (got != (size_t)size) { free(json); return -1; }
+    if (got != (size_t)size) { free(json); return store_fail("add:read-store"); }
     char user[1024] = "", id[1024], priv[2048], pub[2048];
     /* An empty userId is valid for the Java U2F compatibility path. */
     if ((user_id_len && !escape_b64(user_id, user_id_len, user, sizeof user)) ||
         !escape_b64(credential_id, credential_id_len, id, sizeof id) ||
         !escape_b64(private_key_der, private_key_der_len, priv, sizeof priv) ||
-        !escape_b64(public_key_der, public_key_der_len, pub, sizeof pub)) { free(json); return -1; }
+        !escape_b64(public_key_der, public_key_der_len, pub, sizeof pub)) { free(json); return store_fail("add:encode-field"); }
     const char *marker = strstr(json, "\"credentials\"");
     const char *open = marker ? strchr(marker, '[') : NULL;
     const char *close = open ? strchr(open, ']') : NULL;
-    if (!open || !close) { free(json); return -1; }
+    if (!open || !close) { free(json); return store_fail("add:credentials-array"); }
     int has_existing = 0;
     for (const char *q = open + 1; q < close; ++q) if (!isspace((unsigned char)*q)) { has_existing = 1; break; }
     char item[8192];
     int item_len = snprintf(item, sizeof item,
         "%s{\n      \"relayingPartyId\": \"%s\",\n      \"creation\": 0,\n      \"userId\": \"%s\",\n      \"keyPair\": {\n        \"namedCurve\": \"P256_ECDSA\",\n        \"publicKey\": \"%s\",\n        \"privateKey\": \"%s\"\n      },\n      \"signatureCount\": 0,\n      \"id\": \"%s\"\n    }",
         has_existing ? ",\n    " : "", rp_id, user, pub, priv, id);
-    if (item_len < 0 || (size_t)item_len >= sizeof item) { free(json); return -1; }
+    if (item_len < 0 || (size_t)item_len >= sizeof item) { free(json); return store_fail("add:item-too-large"); }
     size_t prefix = (size_t)(close - json), suffix = strlen(close);
     char *updated = malloc((size_t)size + (size_t)item_len + 1);
-    if (!updated) { free(json); return -1; }
+    if (!updated) { free(json); return store_fail("add:alloc-updated"); }
     memcpy(updated, json, prefix); memcpy(updated + prefix, item, (size_t)item_len);
     memcpy(updated + prefix + item_len, close, suffix + 1);
     int rc = atomic_write_json(path, updated, prefix + (size_t)item_len + suffix);
@@ -334,7 +345,9 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
          * reporting registration failure to CTAP. */
         struct pifido_store check;
         if (pifido_store_load(path, &check) == 0) rc = 0;
+        else snprintf(store_error_text, sizeof store_error_text, "add:write rc=%d verify-failed", rc);
     }
+    if (rc == 0) snprintf(store_error_text, sizeof store_error_text, "none");
     free(updated); free(json); return rc;
 }
 

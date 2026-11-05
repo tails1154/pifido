@@ -375,7 +375,11 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
         }
         response[0] = 0x2e;
-        log_event("CTAP makeCredential status=0x%02x internal_stage=%d", response[0], -make_rc);
+        if (-make_rc == 29)
+            log_event("CTAP makeCredential status=0x%02x internal_stage=%d store_error=%s",
+                      response[0], -make_rc, pifido_store_last_error());
+        else
+            log_event("CTAP makeCredential status=0x%02x internal_stage=%d", response[0], -make_rc);
         return write_report(fd, cid, CTAPHID_CBOR, response, 1);
     }
     if (p[0] == 0x06) {
