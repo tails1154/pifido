@@ -477,7 +477,11 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
         uint8_t pin_status = pifido_pin_verify_auth(pin_state, protocol, auth_data,
                                                     1 + params_end - params_start,
                                                     auth, auth_len);
-        if (pin_status != 0) { response[0] = pin_status; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+        if (pin_status != 0) {
+            log_event("CTAP credentialManagement subcommand=%llu PIN status=0x%02x",
+                      (unsigned long long)subcommand, pin_status);
+            response[0] = pin_status; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
         if (subcommand == 1) {
             struct cbor_writer w = {response + 1, sizeof response - 1, 0};
             if (cbor_write_map_len(&w, 2) || cbor_write_uint(&w, 1) || cbor_write_uint(&w, store->count) ||
@@ -547,8 +551,14 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
                     }
                 } else if (cbor_skip(&pr) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
             }
-            if (!credential_id || pifido_store_delete_credential(store_path, credential_id, credential_id_len) != 0 ||
-                pifido_store_load(store_path, store) != 0) { response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            int delete_rc = credential_id ? pifido_store_delete_credential(store_path, credential_id, credential_id_len) : -1;
+            int reload_rc = delete_rc == 0 ? pifido_store_load(store_path, store) : -1;
+            if (!credential_id || delete_rc != 0 || reload_rc != 0) {
+                log_event("CTAP credentialManagement delete status=0x2e id_len=%zu delete_rc=%d reload_rc=%d",
+                          credential_id_len, delete_rc, reload_rc);
+                response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            log_event("CTAP credentialManagement delete status=0 id_len=%zu", credential_id_len);
             response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
         }
         response[0] = CTAP2_ERR_INVALID_COMMAND;
