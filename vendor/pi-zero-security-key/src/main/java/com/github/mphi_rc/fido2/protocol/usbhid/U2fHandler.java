@@ -40,10 +40,21 @@ final class U2fHandler {
         int ins = apdu[1] & 0xff;
         log.info("U2F APDU INS=0x{} length={}", Integer.toHexString(ins), apdu.length);
         if (ins == 0x03) return VERSION;
-        if (apdu.length < 7) return status(0x6700);
-        int lc = ((apdu[5] & 0xff) << 8) | (apdu[6] & 0xff);
-        if (lc > apdu.length - 7) lc = apdu.length - 7;
-        byte[] data = Arrays.copyOfRange(apdu, 7, 7 + lc);
+        if (apdu.length < 5) return status(0x6700);
+        int headerLength;
+        int lc;
+        int shortLc = apdu[4] & 0xff;
+        if (apdu.length == 5 + shortLc) {
+            headerLength = 5;
+            lc = shortLc;
+        } else if (apdu.length >= 7) {
+            headerLength = 7;
+            lc = ((apdu[5] & 0xff) << 8) | (apdu[6] & 0xff);
+            if (lc > apdu.length - headerLength) lc = apdu.length - headerLength;
+        } else {
+            return status(0x6700);
+        }
+        byte[] data = Arrays.copyOfRange(apdu, headerLength, headerLength + lc);
         try {
             if (ins == 0x01 && data.length >= 64) return register(data);
             if (ins == 0x02 && data.length >= 65) return authenticate(data);
