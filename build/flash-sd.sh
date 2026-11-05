@@ -43,7 +43,9 @@ dd if="$IMAGE" of="$DEV" bs=4M status=progress conv=fsync
 sync
 
 IMAGE_HASH=$(sha256sum "$IMAGE" | awk '{print $1}')
-DEVICE_HASH=$(dd if="$DEV" bs=4M count=$((($(stat -c '%s' "$IMAGE") + 4194303) / 4194304)) status=none | head -c "$(stat -c '%s' "$IMAGE")" | sha256sum | awk '{print $1}')
+IMAGE_BYTES=$(stat -c '%s' "$IMAGE")
+[ $((IMAGE_BYTES % 512)) -eq 0 ] || { echo 'image size is not sector aligned' >&2; exit 5; }
+DEVICE_HASH=$(dd if="$DEV" bs=512 count=$((IMAGE_BYTES / 512)) status=none | sha256sum | awk '{print $1}')
 [ "$IMAGE_HASH" = "$DEVICE_HASH" ] || {
     echo "verification failed: image=$IMAGE_HASH device=$DEVICE_HASH" >&2
     exit 5
