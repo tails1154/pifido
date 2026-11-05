@@ -12,10 +12,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <unistd.h>
 
 #define HID_REPORT_SIZE 64
 #define CTAPHID_INIT 0x86
+#define CTAPHID_PING 0x81
 #define CTAPHID_CBOR 0x90
 #define CTAPHID_ERROR 0xbf
 #define CTAPHID_KEEPALIVE 0xbb
@@ -39,6 +41,8 @@ struct hid_state {
     uint8_t next_seq;
 };
 
+static uint32_t assigned_cid = 0;
+
 static uint32_t be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8) | p[3];
@@ -51,6 +55,14 @@ static void put_be32(uint8_t *p, uint32_t v) {
 
 static void put_be16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v;
+}
+
+static uint32_t allocate_cid(void) {
+    uint32_t cid = 0;
+    if (getrandom(&cid, sizeof cid, 0) != (ssize_t)sizeof cid ||
+        cid == 0 || cid == CTAPHID_BROADCAST_CID)
+        cid = 0x01020304u;
+    return cid;
 }
 
 static int write_report(int fd, uint32_t cid, uint8_t cmd,
@@ -108,6 +120,31 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n) {
     return write_report(fd, cid, CTAPHID_CBOR, response, 1);
 }
 
+static int dispatch_hid(int fd, uint32_t cid, uint8_t command,
+                        const uint8_t *p, size_t n) {
+    uint8_t response[7609];
+    if (command == CTAPHID_INIT) {
+        if (n != 8) {
+            uint8_t e = CTAPHID_ERR_INVALID_LEN;
+            return write_report(fd, cid, CTAPHID_ERROR, &e, 1);
+        }
+        memcpy(response, p, 8);
+        assigned_cid = allocate_cid();
+        put_be32(response + 8, assigned_cid);
+        response[12] = 2; response[13] = 1; response[14] = 0;
+        response[15] = 0x04; /* CTAPHID_CAPABILITY_CBOR */
+        return write_report(fd, cid, CTAPHID_INIT, response, 16);
+    }
+    if (command == CTAPHID_PING)
+        return write_report(fd, cid, CTAPHID_PING, p, n);
+    if (command == CTAPHID_CBOR)
+        return dispatch_cbor(fd, cid, p, n);
+    {
+        uint8_t e = CTAPHID_ERR_INVALID_CMD;
+        return write_report(fd, cid, CTAPHID_ERROR, &e, 1);
+    }
+}
+
 static int self_test(void) {
     uint8_t out[256];
     size_t n = get_info(out, sizeof out);
@@ -133,22 +170,27 @@ int main(int argc, char **argv) {
         if (type & 0x80) {
             uint16_t len = ((uint16_t)report[5] << 8) | report[6];
             if (len > sizeof s.payload || (cid != s.cid && cid != CTAPHID_BROADCAST_CID)) continue;
-            s.cid = cid == CTAPHID_BROADCAST_CID ? 1 : cid;
+            if (cid == CTAPHID_BROADCAST_CID && type == CTAPHID_INIT)
+                s.cid = CTAPHID_BROADCAST_CID;
+            else if (cid != CTAPHID_BROADCAST_CID)
+                s.cid = cid;
             s.command = type;
             s.expected = len;
             s.received = (uint16_t)((len < 57) ? len : 57);
             s.next_seq = 0;
             memcpy(s.payload, report + 7, s.received);
-            if (s.received == s.expected && s.command == CTAPHID_CBOR)
-                (void)dispatch_cbor(fd, s.cid, s.payload, s.received);
+            if (s.received == s.expected)
+                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received);
+            if (s.command == CTAPHID_INIT && assigned_cid != 0)
+                s.cid = assigned_cid;
         } else if (type == s.next_seq && s.received < s.expected) {
             size_t ncopy = s.expected - s.received;
             if (ncopy > 59) ncopy = 59;
             memcpy(s.payload + s.received, report + 5, ncopy);
             s.received += (uint16_t)ncopy;
             s.next_seq++;
-            if (s.received == s.expected && s.command == CTAPHID_CBOR)
-                (void)dispatch_cbor(fd, s.cid, s.payload, s.received);
+            if (s.received == s.expected)
+                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received);
         }
     }
     close(fd);
