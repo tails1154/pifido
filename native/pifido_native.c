@@ -553,6 +553,18 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             }
             int delete_rc = credential_id ? pifido_store_delete_credential(store_path, credential_id, credential_id_len) : -1;
             int reload_rc = delete_rc == 0 ? pifido_store_load(store_path, store) : -1;
+            /* Deletion is idempotent for management purposes. Chromium may
+             * retry a credential after a prior request succeeded but before
+             * its UI state refreshed; an absent credential is already in the
+             * requested state. */
+            if (delete_rc == 1 && credential_id) {
+                reload_rc = pifido_store_load(store_path, store);
+                if (reload_rc == 0) {
+                    log_event("CTAP credentialManagement delete status=0 already-absent id_len=%zu", credential_id_len);
+                    response[0] = 0;
+                    return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+                }
+            }
             if (!credential_id || delete_rc != 0 || reload_rc != 0) {
                 log_event("CTAP credentialManagement delete status=0x2e id_len=%zu delete_rc=%d reload_rc=%d",
                           credential_id_len, delete_rc, reload_rc);
