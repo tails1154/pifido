@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+G=/sys/kernel/config/usb_gadget/fido2
+UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+[ -n "$UDC" ] || { echo 'PiFIDO: no USB device controller' >/dev/console; exit 1; }
+
+mkdir -p "$G"
+printf '0x1209\n' > "$G/idVendor"
+printf '0xf1d0\n' > "$G/idProduct"
+printf '0x0001\n' > "$G/bcdDevice"
+printf '0x0200\n' > "$G/bcdUSB"
+
+mkdir -p "$G/strings/0x409"
+printf 'pifido-zero-%s\n' "$UDC" > "$G/strings/0x409/serialnumber"
+printf 'Tails1154\n' > "$G/strings/0x409/manufacturer"
+printf 'FIDO2\n' > "$G/strings/0x409/product"
+
+mkdir -p "$G/configs/c.1/strings/0x409"
+printf 'FIDO2\n' > "$G/configs/c.1/strings/0x409/configuration"
+printf '250\n' > "$G/configs/c.1/MaxPower"
+
+F="$G/functions/hid.usb0"
+mkdir -p "$F"
+printf '0\n' > "$F/protocol"
+printf '0\n' > "$F/subclass"
+printf '64\n' > "$F/report_length"
+# FIDO HID report descriptor, 64-byte input and output reports.
+printf '\006\320\361\011\001\241\001\011\040\025\000\046\377\000\165\010\225\100\201\002\011\041\025\000\046\377\000\165\010\225\100\221\002\300' > "$F/report_desc"
+
+ln -sf "$F" "$G/configs/c.1/hid.usb0"
+printf '%s\n' "$UDC" > "$G/UDC"
+echo "PiFIDO: USB HID gadget attached to $UDC" >/dev/console

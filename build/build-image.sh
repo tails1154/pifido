@@ -4,37 +4,19 @@ set -euo pipefail
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUILDROOT_DIR=${BUILDROOT_DIR:-$PROJECT_ROOT/.buildroot-2025.11}
 OUTPUT_DIR=${OUTPUT_DIR:-"$PROJECT_ROOT/output"}
-export GRADLE_USER_HOME=${GRADLE_USER_HOME:-$PROJECT_ROOT/.gradle-home}
-export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djava.io.tmpdir=$PROJECT_ROOT/.java-tmp"
-mkdir -p "$GRADLE_USER_HOME" "$PROJECT_ROOT/.java-tmp"
-
 if [ ! -d "$BUILDROOT_DIR" ]; then
     git clone --depth 1 --branch 2025.11 https://gitlab.com/buildroot.org/buildroot.git "$BUILDROOT_DIR"
 fi
 
-JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-8-openjdk}
-JAVA_HOME="$JAVA_HOME" "$PROJECT_ROOT/vendor/pi-zero-security-key/gradlew" -p "$PROJECT_ROOT/vendor/pi-zero-security-key" shadowJar --no-daemon
-
 mkdir -p "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/pifido"
 cp -a "$PROJECT_ROOT/build/rootfs-overlay/." "$BUILDROOT_DIR/board/pifido-overlay/"
-cp "$PROJECT_ROOT/vendor/pi-zero-security-key/build/libs/pi-zero-security-key-0.1.0.jar" \
-   "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/pifido/pifido.jar"
-
-# Prebuilt Azul Zulu 11 ARM32 hard-float runtime with ARMv6 support.
-JAVA_URL=${JAVA_URL:-https://cdn.azul.com/zulu/bin/zulu11.90.19-ca-jdk11.0.32-linux_aarch32hf.tar.gz}
-JAVA_CACHE="$BUILDROOT_DIR/dl/zulu11-armv6.tar.gz"
-mkdir -p "$(dirname "$JAVA_CACHE")"
-[ -s "$JAVA_CACHE" ] || curl --fail --location --retry 3 --output "$JAVA_CACHE" "$JAVA_URL"
-JAVA_TMP=$(mktemp -d -p "$BUILDROOT_DIR" pifido-zulu.XXXXXX)
-tar -xf "$JAVA_CACHE" -C "$JAVA_TMP"
-JAVA_DIR=$(find "$JAVA_TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-mkdir -p "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu"
-chmod -R u+rwX "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu" 2>/dev/null || true
-cp -a "$JAVA_DIR/." "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/"
-rm -rf "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/include" "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/jmods" "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/demo" "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/man" "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/lib/src.zip"
-rm -f "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/bin/javac" "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/bin/javadoc" "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/bin/javap" "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/zulu/bin/jar"
-rm -rf "$JAVA_TMP"
+mkdir -p "$BUILDROOT_DIR/package/pifido-native"
+cp -a "$PROJECT_ROOT/buildroot-package/pifido-native/." "$BUILDROOT_DIR/package/pifido-native/"
+if ! grep -q 'source "package/pifido-native/Config.in"' "$BUILDROOT_DIR/package/Config.in"; then
+    printf '\nsource "package/pifido-native/Config.in"\n' >> "$BUILDROOT_DIR/package/Config.in"
+fi
 chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/etc/init.d/S01pifido"
+chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/pifido/setup-hid-gadget"
 chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/init"
 
 make -C "$BUILDROOT_DIR" raspberrypi0w_defconfig
@@ -49,9 +31,10 @@ BR2_PACKAGE_PYTHON3=n
 BR2_PACKAGE_MBEDTLS=y
 BR2_PACKAGE_TINYCBOR=y
 BR2_PACKAGE_OPENSSL=y
+BR2_PACKAGE_PIFIDO_NATIVE=y
 BR2_TARGET_GENERIC_GETTY=n
 BR2_TARGET_GENERIC_ISSUE="PiFIDO"
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$PROJECT_ROOT/build/kernel.fragment"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$PROJECT_ROOT/build/kernel-minimal.fragment"
 EOF
 make -C "$BUILDROOT_DIR" olddefconfig
 make -C "$BUILDROOT_DIR" -j"$(nproc)"

@@ -38,6 +38,23 @@
 #define CTAP2_ERR_INVALID_CBOR 0x12
 #define CTAP2_ERR_NO_CREDENTIALS 0x2e
 
+static size_t u2f_apdu(uint8_t *out, size_t cap, const uint8_t *apdu, size_t len) {
+    /* Keep the legacy CTAPHID_MSG path well-formed.  Chromium may probe a
+     * FIDO2 device with U2F VERSION before selecting CTAP2. */
+    if (cap < 2) return 0;
+    if (len >= 2 && apdu[1] == 0x03) {
+        static const uint8_t version[] = {'U','2','F','_','V','2',0x90,0x00};
+        if (cap < sizeof version) return 0;
+        memcpy(out, version, sizeof version);
+        return sizeof version;
+    }
+    /* Native CTAP2 is the supported registration/authentication path.  A
+     * legacy request is rejected with CONDITIONS_NOT_SATISFIED rather than
+     * being silently treated as success or mapped to a different protocol. */
+    out[0] = 0x69; out[1] = 0x85;
+    return 2;
+}
+
 struct hid_state {
     uint32_t cid;
     uint8_t command;
@@ -99,13 +116,21 @@ static int write_report(int fd, uint32_t cid, uint8_t cmd,
 }
 
 static size_t get_info(uint8_t *out, size_t cap) {
-    /* CTAP2 authenticatorGetInfo response, CBOR map. */
+    /* CTAP2 authenticatorGetInfo response, CBOR map.  Keep the field
+     * numbers aligned with the specification: 0x03 is the 16-byte AAGUID,
+     * 0x04 is the options map, and 0x05 is maxMsgSize. */
     static const uint8_t info[] = {
+        0xa6,
         0x01, 0x81, 0x68, 'F','I','D','O','_','2','_','0',
-        0x03, 0xa2, 0x62, 'r','k', 0xf5, 0x62, 'u','v', 0xf4,
-        0x04, 0x19, 0x1d, 0xb9,
-        0x05, 0x81, 0x01,
-        0x06, 0x81, 0x01
+        0x03, 0x50,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0x04, 0xa3,
+        0x64, 'p','l','a','t', 0xf4,
+        0x62, 'r','k', 0xf5,
+        0x62, 'u','p', 0xf5,
+        0x05, 0x19, 0x04, 0xb0,
+        0x06, 0x81, 0x01,
+        0x09, 0x81, 0x63, 'u','s','b'
     };
     if (cap < sizeof info) return 0;
     memcpy(out, info, sizeof info);
@@ -133,6 +158,16 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
         response[0] = CTAP2_ERR_NO_CREDENTIALS;
         return write_report(fd, cid, CTAPHID_CBOR, response, 1);
     }
+    if (p[0] == 0x01) {
+        r = 0;
+        if (pifido_make_credential(p + 1, n - 1, store, store_path,
+                                   response + 1, sizeof response - 1, &r) == 0) {
+            response[0] = 0;
+            return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
+        }
+        response[0] = 0x2e;
+        return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+    }
     response[0] = CTAP2_ERR_INVALID_COMMAND;
     return write_report(fd, cid, CTAPHID_CBOR, response, 1);
 }
@@ -155,6 +190,11 @@ static int dispatch_hid(int fd, uint32_t cid, uint8_t command,
     }
     if (command == CTAPHID_PING)
         return write_report(fd, cid, CTAPHID_PING, p, n);
+    if (command == CTAPHID_MSG) {
+        uint8_t msg[2048];
+        size_t m = u2f_apdu(msg, sizeof msg, p, n);
+        return m ? write_report(fd, cid, CTAPHID_MSG, msg, m) : -1;
+    }
     if (command == CTAPHID_CBOR)
         return dispatch_cbor(fd, cid, p, n, store, store_path);
     {
@@ -166,7 +206,7 @@ static int dispatch_hid(int fd, uint32_t cid, uint8_t command,
 static int self_test(void) {
     uint8_t out[256];
     size_t n = get_info(out, sizeof out);
-    return n > 0 && out[0] == 0x01 && out[1] == 0x81;
+    return n > 0 && out[0] == 0xa6 && out[1] == 0x01 && out[2] == 0x81;
 }
 
 int main(int argc, char **argv) {
@@ -212,6 +252,19 @@ int main(int argc, char **argv) {
         if (pifido_get_assertion(request, w.pos, &store, argv[2], response,
                                  sizeof response, &response_len) != 0) return 1;
         printf("assertion response %zu bytes\n", response_len);
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "--make-test") == 0) {
+        struct pifido_store store; uint8_t request[512], response[2048], hash[32]={0}, uid[]={9}; size_t response_len=0;
+        if (pifido_store_load(argv[2], &store) != 0) return 1;
+        struct cbor_writer w={request,sizeof request,0};
+        if(cbor_write_map_len(&w,4)||cbor_write_uint(&w,1)||cbor_write_bytes(&w,hash,32)||
+           cbor_write_uint(&w,2)||cbor_write_map_len(&w,1)||cbor_write_uint(&w,1)||cbor_write_text(&w,"native.test",11)||
+           cbor_write_uint(&w,3)||cbor_write_map_len(&w,1)||cbor_write_uint(&w,1)||cbor_write_bytes(&w,uid,sizeof uid)||
+           cbor_write_uint(&w,4)||cbor_write_array_len(&w,1)||cbor_write_map_len(&w,1)||cbor_write_uint(&w,3)||cbor_write_int(&w,-7)) return 1;
+        if(pifido_make_credential(request,w.pos,&store,argv[2],response,sizeof response,&response_len)!=0) return 1;
+        if(pifido_store_load(argv[2],&store)!=0 || store.count == 0) return 1;
+        printf("makeCredential response %zu bytes; credentials=%zu\n", response_len, store.count);
         return 0;
     }
     if (argc != 3 || strcmp(argv[1], "--hid") != 0) {

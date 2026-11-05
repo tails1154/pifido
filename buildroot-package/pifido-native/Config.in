@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PIFIDO_NATIVE
+	bool "pifido native authenticator"
+	depends on BR2_PACKAGE_OPENSSL
+	depends on BR2_PACKAGE_MBEDTLS
+	help
+	  Native USB CTAPHID/CTAP2 authenticator for the Pi Zero.

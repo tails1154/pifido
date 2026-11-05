@@ -11,5 +11,8 @@ int pifido_sign_sha256(const struct pifido_credential *credential,
 int pifido_verify_sha256(const struct pifido_credential *credential,
                          const uint8_t digest[32], const uint8_t *signature,
                          size_t signature_len);
+int pifido_generate_p256(uint8_t *private_der, size_t private_cap, size_t *private_len,
+                         uint8_t *public_der, size_t public_cap, size_t *public_len,
+                         uint8_t x[32], uint8_t y[32]);
 
 #endif

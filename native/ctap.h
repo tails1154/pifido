@@ -9,5 +9,9 @@ int pifido_get_assertion(const uint8_t *request, size_t request_len,
                         struct pifido_store *store, const char *store_path,
                         uint8_t *response, size_t response_cap,
                         size_t *response_len);
+int pifido_make_credential(const uint8_t *request, size_t request_len,
+                           struct pifido_store *store, const char *store_path,
+                           uint8_t *response, size_t response_cap,
+                           size_t *response_len);
 
 #endif

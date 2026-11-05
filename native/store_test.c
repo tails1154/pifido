@@ -17,6 +17,11 @@ int main(void) {
     const char fixture[] = "{\"credentials\":[{\"relayingPartyId\": \"example.test\",\"userId\": \"AQ==\",\"keyPair\": {\"publicKey\": \"AQ==\",\"privateKey\": \"Ag==\"},\"signatureCount\": 7,\"id\": \"Aw==\"}]}";
     if (write(fd, fixture, sizeof fixture - 1) != (ssize_t)(sizeof fixture - 1)) return 1;
     close(fd);
+    uint8_t uid[] = {4}, new_id[] = {5}, priv[] = {6}, pub[] = {7};
+    if (pifido_store_add_credential(copy, "new.example", uid, sizeof uid,
+                                    new_id, sizeof new_id, priv, sizeof priv,
+                                    pub, sizeof pub) != 0) return 1;
+    if (pifido_store_load(copy, &s) != 0 || s.count != 2) return 1;
     uint8_t id[] = {3};
     uint32_t count = 0;
     int inc = pifido_store_increment_counter(copy, id, sizeof id, &count);

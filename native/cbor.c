@@ -17,6 +17,13 @@ static int head(struct cbor_reader *r, uint8_t *major, uint64_t *arg) {
 int cbor_read_uint(struct cbor_reader *r, uint64_t *v) {
     uint8_t major; if (head(r, &major, v) != 0 || major != 0) return -1; return 0;
 }
+int cbor_read_int(struct cbor_reader *r, int64_t *v) {
+    size_t save = r->pos; uint8_t major; uint64_t n;
+    if (head(r, &major, &n) != 0) return -1;
+    if (major == 0 && n <= INT64_MAX) { *v = (int64_t)n; return 0; }
+    if (major == 1 && n < INT64_MAX) { *v = -(int64_t)n - 1; return 0; }
+    r->pos = save; return -1;
+}
 int cbor_read_bytes(struct cbor_reader *r, const uint8_t **p, size_t *n) {
     uint8_t major; uint64_t len;
     if (head(r, &major, &len) != 0 || major != 2 || len > r->len - r->pos) return -1;
@@ -58,6 +65,7 @@ static int write_head(struct cbor_writer *w, uint8_t major, uint64_t v) {
     return 0;
 }
 int cbor_write_uint(struct cbor_writer *w, uint64_t v) { return write_head(w, 0, v); }
+int cbor_write_int(struct cbor_writer *w, int64_t v) { return v >= 0 ? write_head(w, 0, (uint64_t)v) : write_head(w, 1, (uint64_t)(-1 - v)); }
 int cbor_write_bytes(struct cbor_writer *w, const uint8_t *p, size_t n) { if (write_head(w, 2, n) != 0 || w->cap - w->pos < n) return -1; for (size_t i=0;i<n;++i) w->data[w->pos++]=p[i]; return 0; }
 int cbor_write_text(struct cbor_writer *w, const char *p, size_t n) { if (write_head(w, 3, n) != 0 || w->cap - w->pos < n) return -1; for (size_t i=0;i<n;++i) w->data[w->pos++]=(uint8_t)p[i]; return 0; }
 int cbor_write_map_len(struct cbor_writer *w, size_t n) { return write_head(w, 5, n); }
