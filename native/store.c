@@ -325,66 +325,56 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
 
 int pifido_store_delete_credential(const char *path, const uint8_t *credential_id,
                                    size_t credential_id_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
-    long size = ftell(f);
-    if (size <= 0 || size > 4 * 1024 * 1024) { fclose(f); return -1; }
-    rewind(f);
-    char *json = calloc((size_t)size + 1, 1);
-    if (!json) { fclose(f); return -1; }
-    size_t got = fread(json, 1, (size_t)size, f);
-    fclose(f);
-    if (got != (size_t)size) { free(json); return -1; }
+    struct pifido_store store;
+    if (pifido_store_load(path, &store) != 0) return -1;
 
-    char encoded[256];
-    if (!pifido_base64_encode(credential_id, credential_id_len,
-                               encoded, sizeof encoded)) {
-        free(json); return -1;
-    }
-    char needle[320];
-    int n = snprintf(needle, sizeof needle, "\"id\": \"%s\"", encoded);
-    char *id = n > 0 && (size_t)n < sizeof needle ? strstr(json, needle) : NULL;
-    if (!id) {
-        /* JSON writer escapes base64 padding as \\u003d. */
-        char escaped[320]; size_t w = 0;
-        for (size_t i = 0; encoded[i] && w + 6 < sizeof escaped; ++i) {
-            if (encoded[i] == '=') { memcpy(escaped + w, "\\u003d", 6); w += 6; }
-            else escaped[w++] = encoded[i];
+    size_t remove_index = store.count;
+    for (size_t i = 0; i < store.count; ++i) {
+        const struct pifido_credential *c = &store.credentials[i];
+        if (c->credential_id_len == credential_id_len &&
+            memcmp(c->credential_id, credential_id, credential_id_len) == 0) {
+            remove_index = i;
+            break;
         }
-        escaped[w] = '\0';
-        n = snprintf(needle, sizeof needle, "\"id\": \"%s\"", escaped);
-        id = n > 0 && (size_t)n < sizeof needle ? strstr(json, needle) : NULL;
     }
-    if (!id) { free(json); return 1; }
+    if (remove_index == store.count) return 1;
 
-    /* Credential objects are emitted with a four-space closing delimiter;
-     * locate that delimiter rather than the nested keyPair closing brace. */
-    char *start = NULL;
-    for (char *scan = json; ; ) {
-        char *candidate = strstr(scan, "\n    {");
-        if (!candidate || candidate >= id) break;
-        start = candidate + 1;
-        scan = candidate + 1;
+    /* Re-serialize the parsed records instead of editing JSON with string
+     * offsets.  This handles deleting the first, last, or only credential
+     * without leaving a dangling comma or malformed credentials array. */
+    size_t cap = 1024 * 1024;
+    char *updated = calloc(cap, 1);
+    if (!updated) return -1;
+    size_t used = 0;
+    int n = snprintf(updated + used, cap - used, "{\"credentials\":[");
+    if (n < 0 || (size_t)n >= cap - used) { free(updated); return -1; }
+    used += (size_t)n;
+    for (size_t i = 0; i < store.count; ++i) {
+        if (i == remove_index) continue;
+        const struct pifido_credential *c = &store.credentials[i];
+        char user[1024], id[1024], priv[2048], pub[2048];
+        if ((c->user_id_len && !escape_b64(c->user_id, c->user_id_len, user, sizeof user)) ||
+            !escape_b64(c->credential_id, c->credential_id_len, id, sizeof id) ||
+            !escape_b64(c->private_key_der, c->private_key_der_len, priv, sizeof priv) ||
+            !escape_b64(c->public_key_der, c->public_key_der_len, pub, sizeof pub)) {
+            free(updated); return -1;
+        }
+        if (!c->user_id_len) user[0] = '\0';
+        n = snprintf(updated + used, cap - used,
+            "%s{\n      \"relayingPartyId\": \"%s\",\n      \"creation\": 0,\n"
+            "      \"userId\": \"%s\",\n      \"keyPair\": {\n"
+            "        \"namedCurve\": \"P256_ECDSA\",\n"
+            "        \"publicKey\": \"%s\",\n        \"privateKey\": \"%s\"\n"
+            "      },\n      \"signatureCount\": %u,\n      \"id\": \"%s\"\n    }",
+            used > strlen("{\"credentials\":[") ? ",\n    " : "",
+            c->rp_id, user, pub, priv, c->signature_count, id);
+        if (n < 0 || (size_t)n >= cap - used) { free(updated); return -1; }
+        used += (size_t)n;
     }
-    if (!start) {
-        start = strchr(json, '{');
-        if (!start || start >= id) { free(json); return -1; }
-    }
-    char *end = strstr(id, "\n    }");
-    if (!end) { free(json); return -1; }
-    end += strlen("\n    }");
-    while (*end == ' ' || *end == '\n' || *end == '\r' || *end == ',') ++end;
-    if (*end == ',') ++end;
-    while (*end == ' ' || *end == '\n' || *end == '\r') ++end;
-    size_t prefix_len = (size_t)(start - json);
-    size_t suffix_len = (size_t)size - (size_t)(end - json);
-    char *updated = malloc(prefix_len + suffix_len + 1);
-    if (!updated) { free(json); return -1; }
-    memcpy(updated, json, prefix_len);
-    memcpy(updated + prefix_len, end, suffix_len);
-    updated[prefix_len + suffix_len] = '\0';
-    int rc = atomic_write_json(path, updated, prefix_len + suffix_len);
-    free(updated); free(json);
+    n = snprintf(updated + used, cap - used, "]}");
+    if (n < 0 || (size_t)n >= cap - used) { free(updated); return -1; }
+    used += (size_t)n;
+    int rc = atomic_write_json(path, updated, used);
+    free(updated);
     return rc;
 }

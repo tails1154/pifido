@@ -30,6 +30,15 @@ int main(void) {
     if (reload != 0 || s.credentials[0].signature_count != 8) return 1;
     if (pifido_store_delete_credential(copy, new_id, sizeof new_id) != 0) return 1;
     if (pifido_store_load(copy, &s) != 0 || s.count != 1) return 1;
+    /* Exercise deletion of the remaining/first object, then ensure a new
+     * registration can append to the resulting empty array. */
+    if (pifido_store_delete_credential(copy, id, sizeof id) != 0) return 1;
+    if (pifido_store_load(copy, &s) != 0 || s.count != 0) return 1;
+    uint8_t id2[] = {8};
+    if (pifido_store_add_credential(copy, "after-delete.test", uid, sizeof uid,
+                                    id2, sizeof id2, priv, sizeof priv,
+                                    pub, sizeof pub) != 0) return 1;
+    if (pifido_store_load(copy, &s) != 0 || s.count != 1) return 1;
     unlink(copy);
     puts("credential store self-test passed");
     return 0;
