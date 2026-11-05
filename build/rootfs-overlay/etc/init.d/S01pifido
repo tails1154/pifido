@@ -18,7 +18,10 @@ mountpoint -q /sys/kernel/config || {
 # function links in place makes the next bind fail with EBUSY/EINVAL.
 for OLD in /sys/kernel/config/usb_gadget/*; do
     [ -d "$OLD" ] || continue
-    [ -e "$OLD/UDC" ] && printf '' > "$OLD/UDC" 2>/dev/null || true
+    # ConfigFS requires an actual write (normally a newline) to detach the
+    # gadget.  A zero-byte printf succeeds but leaves the UDC claimed, which
+    # makes the next authenticator start fail with EBUSY.
+    [ -e "$OLD/UDC" ] && printf '\n' > "$OLD/UDC" 2>/dev/null || true
     [ -L "$OLD/configs/c.1/hid.usb0" ] && unlink "$OLD/configs/c.1/hid.usb0" 2>/dev/null || true
     [ -L "$OLD/configs/c.1/ffs.authui" ] && unlink "$OLD/configs/c.1/ffs.authui" 2>/dev/null || true
     rmdir "$OLD/configs/c.1/strings/0x409" 2>/dev/null || true
@@ -31,6 +34,7 @@ for OLD in /sys/kernel/config/usb_gadget/*; do
     rmdir "$OLD/strings" 2>/dev/null || true
     rmdir "$OLD" 2>/dev/null || true
 done
+sleep 1
 
 mount -a 2>/dev/null || true
 mkdir -p /dev/ffs-authui
