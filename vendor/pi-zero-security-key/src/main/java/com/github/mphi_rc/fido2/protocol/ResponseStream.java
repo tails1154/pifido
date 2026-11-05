@@ -51,7 +51,7 @@ public class ResponseStream implements Consumer<RawMessage>, AutoCloseable {
 			byte[] channel = m.channelId().id();
 			byte command = m.command().asByte();
 			byte[] payload = m.payload();
-			int lengthHigh = payload.length & 0xFF00;
+			int lengthHigh = (payload.length >>> 8) & 0xFF;
 			int lengthLow = payload.length & 0x00FF;
 			int payloadReadLength = Math.min(payload.length, initSpace);
 
