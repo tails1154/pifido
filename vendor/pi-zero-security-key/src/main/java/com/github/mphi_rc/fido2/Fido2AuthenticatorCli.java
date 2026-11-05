@@ -28,11 +28,9 @@ public class Fido2AuthenticatorCli {
 
 		ConfigFs configFs = ConfigFs.ofDefault();
 		configFs.initialize(fido2Gadget);
-		// FunctionFS must publish its descriptors before the composite gadget is
-		// bound to the UDC, otherwise Linux rejects the ffs function with ENODEV.
-		ManagementHidServer management = new ManagementHidServer(config);
-		management.prepare();
-		management.start();
+		// Keep the boot-critical authenticator limited to the standard FIDO HID
+		// interface.  The optional FunctionFS/WebUSB management interface is not
+		// allowed to prevent CTAPHID from binding to the UDC.
 		configFs.attach(fido2Gadget, config.usbDeviceController());
 
 		Fido2Authenticator authenticator = new Fido2Authenticator(config);

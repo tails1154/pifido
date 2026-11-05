@@ -74,12 +74,6 @@ public class ConfigFs {
 		Files.deleteIfExists(hidLink);
 		Files.createSymbolicLink(hidLink, gadgetRoot.resolve("functions/hid.usb0"));
 
-		// Separate vendor-class FunctionFS interface for WebUSB management.
-		Path management = gadgetRoot.resolve("functions/ffs.authui");
-		if (Files.notExists(management)) Files.createDirectories(management);
-		Path managementLink = gadgetRoot.resolve("configs/c.1/ffs.authui");
-		Files.deleteIfExists(managementLink);
-		Files.createSymbolicLink(managementLink, management);
 	}
 
 	public void attach(UsbHidGadget gadget, UsbDeviceController driver) throws IOException {

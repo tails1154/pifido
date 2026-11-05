@@ -34,8 +34,8 @@ done
 
 mount -a 2>/dev/null || true
 mkdir -p /dev/ffs-authui
-umount /dev/ffs-authui 2>/dev/null || true
-mount -t functionfs authui /dev/ffs-authui || true
+# FunctionFS/WebUSB management is optional and is deliberately not mounted
+# during boot; CTAPHID must remain independent of it.
 mkdir -p /data
 if ! mountpoint -q /data; then
     for i in $(seq 1 30); do
