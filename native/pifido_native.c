@@ -299,8 +299,8 @@ static size_t get_info(uint8_t *out, size_t cap) {
         0x62, 'u','p', 0xf5,
         0x64, 'p','l','a','t', 0xf4,
         0x68, 'c','r','e','d','M','g','m','t', 0xf5,
-        /* Match the Java reference's complete PIN capability tuple. The
-         * value false means PIN is not configured; protocol 1 is supported. */
+        /* Match the Java reference's complete PIN capability tuple. This
+         * authenticator has a configured PIN and supports protocol 1. */
         0x69, 'c','l','i','e','n','t','P','i','n', 0xf5,
         0x05, 0x19, 0x04, 0xb0,
         0x06, 0x81, 0x01,
