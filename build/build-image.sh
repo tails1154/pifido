@@ -39,7 +39,6 @@ chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/init"
 
 make -C "$BUILDROOT_DIR" raspberrypi0w_defconfig
 cat >> "$BUILDROOT_DIR/.config" <<EOF
-BR2_TARGET_ROOTFS_INITRAMFS=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 BR2_ROOTFS_OVERLAY="$BUILDROOT_DIR/board/pifido-overlay"
