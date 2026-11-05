@@ -198,6 +198,16 @@ int main(void) {
           cbor_write_uint(&w, 1) == 0);
     int user_verified = 0;
     CHECK(pifido_pin_check_request(&state, 0x02, assertion_request, w.pos, &user_verified) == 0 && user_verified);
+    /* Chromium's GetTouch() PIN-management probe uses an empty pinAuth. */
+    uint8_t touch_request[128];
+    struct cbor_writer tw = {touch_request, sizeof touch_request, 0};
+    uint8_t zero_hash[32] = {0};
+    CHECK(cbor_write_map_len(&tw, 4) == 0 && cbor_write_uint(&tw, 1) == 0 &&
+          cbor_write_bytes(&tw, zero_hash, sizeof zero_hash) == 0 &&
+          cbor_write_uint(&tw, 8) == 0 && cbor_write_bytes(&tw, NULL, 0) == 0 &&
+          cbor_write_uint(&tw, 9) == 0 && cbor_write_uint(&tw, 1) == 0 &&
+          cbor_write_uint(&tw, 2) == 0 && cbor_write_map_len(&tw, 0) == 0);
+    CHECK(pifido_pin_check_request(&state, 0x01, touch_request, tw.pos, &user_verified) == 0x33);
     CHECK(get_token(&state, "9999", &status, token) == 0 && status == 0x31 && state.retries == 7);
     pifido_pin_destroy(&state);
     CHECK(pifido_pin_init(&state, path, initial_hash) == 0 && state.retries == 7);
