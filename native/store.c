@@ -322,3 +322,61 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
     int rc = atomic_write_json(path, updated, prefix + (size_t)item_len + suffix);
     free(updated); free(json); return rc;
 }
+
+int pifido_store_delete_credential(const char *path, const uint8_t *credential_id,
+                                   size_t credential_id_len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long size = ftell(f);
+    if (size <= 0 || size > 4 * 1024 * 1024) { fclose(f); return -1; }
+    rewind(f);
+    char *json = calloc((size_t)size + 1, 1);
+    if (!json) { fclose(f); return -1; }
+    size_t got = fread(json, 1, (size_t)size, f);
+    fclose(f);
+    if (got != (size_t)size) { free(json); return -1; }
+
+    char encoded[256];
+    if (!pifido_base64_encode(credential_id, credential_id_len,
+                               encoded, sizeof encoded)) {
+        free(json); return -1;
+    }
+    char needle[320];
+    int n = snprintf(needle, sizeof needle, "\"id\": \"%s\"", encoded);
+    char *id = n > 0 && (size_t)n < sizeof needle ? strstr(json, needle) : NULL;
+    if (!id) {
+        /* JSON writer escapes base64 padding as \\u003d. */
+        char escaped[320]; size_t w = 0;
+        for (size_t i = 0; encoded[i] && w + 6 < sizeof escaped; ++i) {
+            if (encoded[i] == '=') { memcpy(escaped + w, "\\u003d", 6); w += 6; }
+            else escaped[w++] = encoded[i];
+        }
+        escaped[w] = '\0';
+        n = snprintf(needle, sizeof needle, "\"id\": \"%s\"", escaped);
+        id = n > 0 && (size_t)n < sizeof needle ? strstr(json, needle) : NULL;
+    }
+    if (!id) { free(json); return 1; }
+
+    /* Credential objects are emitted with a four-space closing delimiter;
+     * locate that delimiter rather than the nested keyPair closing brace. */
+    char *start = id;
+    while (start > json && !(start[0] == '{' && start > json && start[-1] == '\n')) --start;
+    if (start == json) { free(json); return -1; }
+    char *end = strstr(id, "\n    }");
+    if (!end) { free(json); return -1; }
+    end += strlen("\n    }");
+    while (*end == ' ' || *end == '\n' || *end == '\r' || *end == ',') ++end;
+    if (*end == ',') ++end;
+    while (*end == ' ' || *end == '\n' || *end == '\r') ++end;
+    size_t prefix_len = (size_t)(start - json);
+    size_t suffix_len = (size_t)size - (size_t)(end - json);
+    char *updated = malloc(prefix_len + suffix_len + 1);
+    if (!updated) { free(json); return -1; }
+    memcpy(updated, json, prefix_len);
+    memcpy(updated + prefix_len, end, suffix_len);
+    updated[prefix_len + suffix_len] = '\0';
+    int rc = atomic_write_json(path, updated, prefix_len + suffix_len);
+    free(updated); free(json);
+    return rc;
+}

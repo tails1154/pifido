@@ -25,6 +25,7 @@
 #include "cbor.h"
 #include "pin.h"
 #include "u2f.h"
+#include "secure_store.h"
 
 #define HID_REPORT_SIZE 64
 #define CTAPHID_INIT 0x86
@@ -495,15 +496,41 @@ int main(int argc, char **argv) {
     log_event("authenticator started hid=%s", argv[2]);
     struct hid_state s = { .cid = CTAPHID_BROADCAST_CID };
     const char *store_path = getenv("PIFIDO_STORE");
-    if (!store_path) store_path = "/data/pifido/credentials.json";
+    if (!store_path) store_path = "/run/pifido/credentials.json";
+    const char *encrypted_store = getenv("PIFIDO_STORE_ENCRYPTED");
+    if (!encrypted_store) encrypted_store = "/data/pifido/credentials.enc";
+    (void)mkdir("/run/pifido", 0700);
+    struct pifido_pin_state pin_state;
+    if (pifido_pin_init(&pin_state, "/data/pifido/pin.bin", default_pin_hash) != 0) {
+        log_event("PIN state load/init failed; authenticator stopping");
+        close(fd);
+        if (log_fd >= 0) close(log_fd);
+        if (console_fd >= 0) close(console_fd);
+        return 1;
+    }
     struct pifido_store store;
-    if (ensure_store_file(store_path) != 0)
-        log_event("credential store create failed path=%s", store_path);
+    if (access(encrypted_store, F_OK) == 0) {
+        if (pifido_secure_store_load(encrypted_store, store_path, pin_state.pin_hash) != 0) {
+            log_event("encrypted credential store authentication failed; refusing startup");
+            pifido_pin_destroy(&pin_state); close(fd); return 1;
+        }
+    } else if (errno == ENOENT) {
+        if (ensure_store_file(store_path) != 0 ||
+            pifido_secure_store_sync(encrypted_store, store_path, pin_state.pin_hash) != 0) {
+            log_event("encrypted credential store initialization failed; refusing startup");
+            pifido_pin_destroy(&pin_state); close(fd); return 1;
+        }
+        log_event("initialized fresh encrypted credential store");
+    } else {
+        log_event("cannot inspect encrypted credential store; refusing startup");
+        pifido_pin_destroy(&pin_state); close(fd); return 1;
+    }
     if (pifido_store_load(store_path, &store) != 0) {
         memset(&store, 0, sizeof store);
-        log_event("credential store load failed; starting empty");
+        log_event("volatile credential store load failed; refusing startup");
+        pifido_pin_destroy(&pin_state); close(fd); return 1;
     } else {
-        log_event("credential store loaded count=%zu", store.count);
+        log_event("encrypted credential store loaded count=%zu", store.count);
     }
     char aaguid_path[512];
     const char *aaguid_env = getenv("PIFIDO_AAGUID");
@@ -512,14 +539,6 @@ int main(int argc, char **argv) {
     if (load_or_create_aaguid(aaguid_path) != 0) {
         log_event("AAGUID load/create failed path=%s", aaguid_path);
         close(fd);
-        return 1;
-    }
-    struct pifido_pin_state pin_state;
-    if (pifido_pin_init(&pin_state, "/data/pifido/pin.bin", default_pin_hash) != 0) {
-        log_event("PIN state load/init failed; authenticator stopping");
-        close(fd);
-        if (log_fd >= 0) close(log_fd);
-        if (console_fd >= 0) close(console_fd);
         return 1;
     }
     log_event("CTAP clientPIN protocol 1 ready; configured=%s retries=%u",
@@ -558,6 +577,8 @@ int main(int argc, char **argv) {
                           s.command == CTAPHID_CBOR ? " ctap=" : "",
                           s.command == CTAPHID_CBOR ? ctap_command_name(s.payload, s.received) : "");
                 (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path, &pin_state);
+                if (pifido_secure_store_sync(encrypted_store, store_path, pin_state.pin_hash) != 0)
+                    log_event("encrypted credential store sync failed");
                 durability_barrier();
             }
             if (s.command == CTAPHID_INIT && assigned_cid != 0)
@@ -576,6 +597,8 @@ int main(int argc, char **argv) {
                           s.command == CTAPHID_CBOR ? " ctap=" : "",
                           s.command == CTAPHID_CBOR ? ctap_command_name(s.payload, s.received) : "");
                 (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path, &pin_state);
+                if (pifido_secure_store_sync(encrypted_store, store_path, pin_state.pin_hash) != 0)
+                    log_event("encrypted credential store sync failed");
                 durability_barrier();
             }
         } else {

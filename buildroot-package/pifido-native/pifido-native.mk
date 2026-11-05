@@ -12,7 +12,7 @@ define PIFIDO_NATIVE_BUILD_CMDS
 	$(TARGET_MAKE_ENV) $(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_CPPFLAGS) \
 		-I$(@D) -o $(@D)/pifido-native \
 		$(@D)/pifido_native.c $(@D)/store.c $(@D)/crypto.c \
-		$(@D)/cbor.c $(@D)/ctap.c $(@D)/pin.c $(@D)/u2f.c \
+		$(@D)/cbor.c $(@D)/ctap.c $(@D)/pin.c $(@D)/u2f.c $(@D)/secure_store.c \
 		$(TARGET_LDFLAGS) -lcrypto -lmbedcrypto
 endef
 

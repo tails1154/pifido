@@ -18,12 +18,17 @@ hashes. If `/data` failed to mount, the log warns that it is volatile.
 
 The native daemon provisions PIN `1154` on first boot if `/data/pifido/pin.bin`
 does not exist. Only the CTAP PIN verifier and retry counter are persisted, in a
-mode-`0600` crash-consistent file. CTAP PIN protocol 1 supports PIN verification
-and PIN changes; eight failed attempts permanently block PIN use until the
-administrator manually resets the local PIN state. CTAP authenticator reset is
-not implemented. Removing `pin.bin` reinitializes the default PIN. The four-digit
-PIN is weak, and the Pi SD card does not provide a secure element against
-offline PIN guessing after physical theft.
+mode-`0600` crash-consistent file. Credential data is kept in tmpfs while the
+daemon runs and stored on the SD card as an authenticated AES-256-GCM envelope
+using a PBKDF2-HMAC-SHA256 key derived from the PIN verifier. The envelope is
+rewritten and fsynced after every CTAP operation; changing the PIN therefore
+rewraps the current credential store under the new PIN. Legacy plaintext
+`credentials.json` files are ignored and never migrated. CTAP PIN protocol 1
+supports PIN verification and PIN changes; eight failed attempts permanently
+block PIN use until the administrator manually resets the local PIN state. CTAP
+authenticator reset is not implemented. The four-digit PIN is weak, and the Pi
+SD card does not provide a secure element against offline PIN guessing after
+physical theft.
 
 The PIN protocol unit test can be built and run on the build computer with
 `make -C native pin-test && ./native/pin-test`. It covers PIN verification,

@@ -136,7 +136,8 @@ tail -f "$LOG" /data/pifido-native.log /data/pifido-native-console.log >/dev/tty
 
 if [ -x /usr/bin/pifido-native ]; then
     log_line 'native C authenticator selected'
-    PIFIDO_LOG=/data/pifido-native.log PIFIDO_STORE=/data/pifido/credentials.json \
+    PIFIDO_LOG=/data/pifido-native.log PIFIDO_STORE=/run/pifido/credentials.json \
+        PIFIDO_STORE_ENCRYPTED=/data/pifido/credentials.enc \
         PIFIDO_AUTO_UP=1 /usr/bin/pifido-native --hid /dev/hidg0 \
         >/data/pifido-native-console.log 2>&1 &
     NATIVE_PID=$!

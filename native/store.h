@@ -34,5 +34,7 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
                                 const uint8_t *public_key_der, size_t public_key_der_len);
 int pifido_store_increment_counter(const char *path, const uint8_t *credential_id,
                                    size_t credential_id_len, uint32_t *new_count);
+int pifido_store_delete_credential(const char *path, const uint8_t *credential_id,
+                                   size_t credential_id_len);
 
 #endif
