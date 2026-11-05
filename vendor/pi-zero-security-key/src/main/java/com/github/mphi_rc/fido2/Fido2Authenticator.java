@@ -31,7 +31,7 @@ public class Fido2Authenticator {
 		PinState pinState = new PinState(config);
 		Authenticator authenticator = new Authenticator(config, new ConfigurationCredentialStore(config), pinState);
 		AuthenticatorRequestHandler authHandler = new AuthenticatorRequestHandler(authenticator, new PinRequestHandler(pinState));
-		this.usbHidHander = new UsbHidRequestHandler(authHandler);
+		this.usbHidHander = new UsbHidRequestHandler(authHandler, config);
 
 		this.responses = new ResponseStream(new PacketOutputStream(new DataOutputStream(new BufferedOutputStream(
 				new FileOutputStream(config.usbGadgetDevicePath())))));

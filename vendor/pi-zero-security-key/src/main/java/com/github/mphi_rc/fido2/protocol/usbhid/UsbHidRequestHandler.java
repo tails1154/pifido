@@ -10,6 +10,7 @@ import com.github.mphi_rc.fido2.protocol.ctap2.AuthenticatorRequestHandler;
 import com.github.mphi_rc.fido2.protocol.usbhid.command.ImmutableInitResponsePayload;
 import com.github.mphi_rc.fido2.protocol.usbhid.command.InitRequestPayload;
 import com.github.mphi_rc.fido2.protocol.usbhid.command.InitResponsePayload;
+import com.github.mphi_rc.fido2.ConfigurationFile;
 
 public class UsbHidRequestHandler {
 
@@ -17,10 +18,18 @@ public class UsbHidRequestHandler {
 
 	private final AuthenticatorRequestHandler authenticator;
 	private final Set<ChannelId> activeChannels;
+	private final U2fHandler u2f;
 
+	public UsbHidRequestHandler(AuthenticatorRequestHandler authenticator, ConfigurationFile config) {
+		this.authenticator = authenticator;
+		this.activeChannels = new HashSet<>();
+		this.u2f = new U2fHandler(config);
+	}
+	/** Compatibility constructor used by protocol unit tests. */
 	public UsbHidRequestHandler(AuthenticatorRequestHandler authenticator) {
 		this.authenticator = authenticator;
 		this.activeChannels = new HashSet<>();
+		this.u2f = null;
 	}
 
 	public RawMessage handle(RawMessage message) {
@@ -49,7 +58,8 @@ public class UsbHidRequestHandler {
 		case PING:
 			return ImmutableRawMessage.of(message.channelId(), HidCommand.PING, message.payload());
 		case MSG:
-			// U2F isn't supported
+			return u2f == null ? RawMessage.error(message.channelId(), HidError.INVALID_CMD)
+					: ImmutableRawMessage.of(message.channelId(), HidCommand.MSG, u2f.handle(message.payload()));
 		default:
 			return RawMessage.error(message.channelId(), HidError.INVALID_CMD);
 		}
