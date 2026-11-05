@@ -45,11 +45,20 @@ EOF
 make -C "$BUILDROOT_DIR" olddefconfig
 make -C "$BUILDROOT_DIR" -j"$(nproc)"
 
-# Keep the kernel small: the complete runtime is supplied as an external
-# initramfs. The overlay archive is appended after the base rootfs so its
-# current authenticator JAR and startup files override the base copies.
-cat "$BUILDROOT_DIR/output/images/rootfs.cpio.gz" "$PROJECT_ROOT/pifido-update.cpio.gz" \
-    > "$BUILDROOT_DIR/output/images/pifido-full.cpio.gz"
+# Buildroot may retain its stock firmware configuration when the source file
+# changes without invalidating the firmware package stamp.  Install the exact
+# boot files used by this image explicitly so the Pi firmware loads the
+# external initramfs from the SD card.
+install -D -m 0644 "$PROJECT_ROOT/build/rpi-config.txt" \
+    "$BUILDROOT_DIR/output/images/rpi-firmware/config.txt"
+install -D -m 0644 "$PROJECT_ROOT/build/cmdline-fast.txt" \
+    "$BUILDROOT_DIR/output/images/rpi-firmware/cmdline.txt"
+
+# Keep the kernel small: the complete native runtime is supplied as one
+# external initramfs. Do not append the historical Java update archive: a
+# second CPIO archive can override /init and S01pifido during unpacking.
+cp "$BUILDROOT_DIR/output/images/rootfs.cpio.gz" \
+    "$BUILDROOT_DIR/output/images/pifido-full.cpio.gz"
 GENIMAGE_CFG="$BUILDROOT_DIR/output/images/genimage.cfg"
 if ! grep -q 'pifido-full.cpio.gz' "$GENIMAGE_CFG"; then
     sed -i '/"zImage",/a\			"pifido-full.cpio.gz",' "$GENIMAGE_CFG"
