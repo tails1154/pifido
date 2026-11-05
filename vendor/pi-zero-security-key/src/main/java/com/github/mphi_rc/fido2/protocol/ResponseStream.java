@@ -62,7 +62,7 @@ public class ResponseStream implements Consumer<RawMessage>, AutoCloseable {
 			packet.write(lengthLow);
 			packet.write(payload, 0, payloadReadLength);
 
-			while (usbPacketSizeBytes < packet.size()) {
+			while (packet.size() < usbPacketSizeBytes) {
 				packet.write(0);
 			}
 			return ImmutablePacket.of(packet.toByteArray());
@@ -83,7 +83,7 @@ public class ResponseStream implements Consumer<RawMessage>, AutoCloseable {
 			packet.write(seq);
 			packet.write(payload, payloadOffset, packetPayloadLength);
 
-			while (usbPacketSizeBytes < packet.size()) {
+			while (packet.size() < usbPacketSizeBytes) {
 				packet.write(0);
 			}
 			return ImmutablePacket.of(packet.toByteArray());
