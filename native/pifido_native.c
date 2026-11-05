@@ -449,9 +449,14 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             while (idx < store->count && strcmp(store->credentials[idx].rp_id, management_state.rp_id) != 0) ++idx;
             if (idx >= store->count) { management_state.active_credentials = 0; response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
             struct pifido_credential *c = &store->credentials[idx];
+            /* Legacy U2F credentials have no WebAuthn user handle. Chromium
+             * requires a non-empty user.id in credential-management output;
+             * use the stable credential ID as a display-only fallback. */
+            const uint8_t *user_id = c->user_id_len ? c->user_id : c->credential_id;
+            size_t user_id_len = c->user_id_len ? c->user_id_len : c->credential_id_len;
             struct cbor_writer w = {response + 1, sizeof response - 1, 0};
             if (cbor_write_map_len(&w, 4) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 1) ||
-                cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, c->user_id, c->user_id_len) ||
+                cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, user_id, user_id_len) ||
                 cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "id", 2) ||
                 cbor_write_bytes(&w, c->credential_id, c->credential_id_len) ||
                 cbor_write_text(&w, "type", 4) || cbor_write_text(&w, "public-key", 10) ||
@@ -505,10 +510,12 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             if (!management_state.active_credentials) { response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
             size_t idx = (size_t)management_state.credential_index;
             struct pifido_credential *c = &store->credentials[idx];
+            const uint8_t *user_id = c->user_id_len ? c->user_id : c->credential_id;
+            size_t user_id_len = c->user_id_len ? c->user_id_len : c->credential_id_len;
             size_t total = 0; for (size_t i = 0; i < store->count; ++i) if (strcmp(store->credentials[i].rp_id, management_state.rp_id) == 0) ++total;
             struct cbor_writer w = {response + 1, sizeof response - 1, 0};
             if (cbor_write_map_len(&w, 4) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 1) ||
-                cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, c->user_id, c->user_id_len) ||
+                cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, user_id, user_id_len) ||
                 cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "id", 2) ||
                 cbor_write_bytes(&w, c->credential_id, c->credential_id_len) ||
                 cbor_write_text(&w, "type", 4) || cbor_write_text(&w, "public-key", 10) ||
