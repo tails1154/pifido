@@ -15,6 +15,8 @@ import org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPublicKey;
 import org.bouncycastle.x509.X509V3CertificateGenerator;
 import org.bouncycastle.jce.X509Principal;
 import java.security.Security;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.github.mphi_rc.fido2.ConfigurationFile;
 import com.github.mphi_rc.fido2.authenticator.Credential;
@@ -23,6 +25,7 @@ import com.github.mphi_rc.fido2.authenticator.crypto.P256AttestationKeyPair;
 
 /** Minimal CTAP1/U2F APDU implementation used by browsers that issue CTAPHID_MSG. */
 final class U2fHandler {
+    private static final Logger log = LoggerFactory.getLogger(U2fHandler.class);
     private static final byte[] OK = {(byte)0x90, 0x00};
     private static final byte[] VERSION = {'U','2','F','_','V','2', (byte)0x90, 0x00};
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -35,6 +38,7 @@ final class U2fHandler {
     byte[] handle(byte[] apdu) {
         if (apdu.length < 2) return status(0x6d00);
         int ins = apdu[1] & 0xff;
+        log.info("U2F APDU INS=0x{} length={}", Integer.toHexString(ins), apdu.length);
         if (ins == 0x03) return VERSION;
         if (apdu.length < 7) return status(0x6700);
         int lc = ((apdu[5] & 0xff) << 8) | (apdu[6] & 0xff);
@@ -43,7 +47,7 @@ final class U2fHandler {
         try {
             if (ins == 0x01 && data.length >= 64) return register(data);
             if (ins == 0x02 && data.length >= 65) return authenticate(data);
-        } catch (Exception e) { return status(0x6f00); }
+        } catch (Exception e) { log.error("U2F APDU failed", e); return status(0x6f00); }
         return status(0x6d00);
     }
 
