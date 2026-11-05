@@ -58,6 +58,11 @@ fi
 
 mkdir -p "$DATA"
 chmod 700 "$DATA"
+if [ ! -e "$DATA/credentials.json" ]; then
+    printf '%s\n' '{"credentials":[]}' > "$DATA/credentials.json"
+    chmod 600 "$DATA/credentials.json"
+    sync
+fi
 
 while :; do
     UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
