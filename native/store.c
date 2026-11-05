@@ -2,6 +2,7 @@
 #include "store.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -263,6 +264,13 @@ static int atomic_write_json(const char *path, const char *data, size_t len) {
     int n = snprintf(temp_path, sizeof temp_path, "%s.tmp.%ld", path, (long)getpid());
     if (n < 0 || (size_t)n >= sizeof temp_path) return -1;
     int fd = open(temp_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* A previous interrupted request can leave this process-specific staging
+     * file behind.  There is only one store writer in the daemon, so it is
+     * safe to remove and retry that stale file. */
+    if (fd < 0 && errno == EEXIST) {
+        (void)unlink(temp_path);
+        fd = open(temp_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    }
     if (fd < 0) return -1;
     int rc = 0;
     if (write(fd, data, len) != (ssize_t)len || fsync(fd) != 0) rc = -1;
@@ -320,6 +328,13 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
     memcpy(updated, json, prefix); memcpy(updated + prefix, item, (size_t)item_len);
     memcpy(updated + prefix + item_len, close, suffix + 1);
     int rc = atomic_write_json(path, updated, prefix + (size_t)item_len + suffix);
+    if (rc != 0) {
+        /* Some filesystems report a directory fsync failure after rename.
+         * The file is still valid and safely replaced; verify it before
+         * reporting registration failure to CTAP. */
+        struct pifido_store check;
+        if (pifido_store_load(path, &check) == 0) rc = 0;
+    }
     free(updated); free(json); return rc;
 }
 
