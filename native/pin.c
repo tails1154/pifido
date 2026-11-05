@@ -456,3 +456,19 @@ uint8_t pifido_pin_check_request(struct pifido_pin_state *s, uint8_t command,
     *user_verified = 1;
     return CTAP_OK;
 }
+
+uint8_t pifido_pin_verify_auth(struct pifido_pin_state *s, uint64_t protocol,
+                               const uint8_t *data, size_t data_len,
+                               const uint8_t *auth, size_t auth_len) {
+    if (protocol != PIN_PROTOCOL_ONE || !auth || auth_len != 16)
+        return CTAP_INVALID_PARAMETER;
+    if (!s->token_valid || time(NULL) > s->token_expiry) {
+        s->token_valid = 0; OPENSSL_cleanse(s->token, sizeof s->token);
+        return CTAP_PIN_AUTH_INVALID;
+    }
+    uint8_t expected[16];
+    int ok = mac16(s->token, data, data_len, expected) == 0 &&
+             CRYPTO_memcmp(expected, auth, 16) == 0;
+    OPENSSL_cleanse(expected, sizeof expected);
+    return ok ? CTAP_OK : CTAP_PIN_AUTH_INVALID;
+}

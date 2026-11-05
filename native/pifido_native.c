@@ -110,8 +110,8 @@ static const char *ctap_command_name(const uint8_t *data, size_t len) {
     case 0x06: return "clientPIN";
     case 0x07: return "reset";
     case 0x08: return "getNextAssertion";
-    case 0x0a: return "bioEnrollment";
-    case 0x0b: return "credentialManagement";
+    case 0x09: return "bioEnrollment";
+    case 0x0a: return "credentialManagement";
     case 0x0c: return "authenticatorConfig";
     default: return "unknown";
     }
@@ -237,13 +237,14 @@ static size_t get_info(uint8_t *out, size_t cap) {
         0x01, 0x81, 0x68, 'F','I','D','O','_','2','_','0',
         0x03, 0x50,
         0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0x04, 0xa4,
+        0x04, 0xa5,
         /* Canonical CBOR map ordering: shorter text keys precede longer
          * keys, then keys are byte-wise lexical. Java's CBOR encoder emits
          * this order and Chromium rejects non-canonical options maps. */
         0x62, 'r','k', 0xf5,
         0x62, 'u','p', 0xf5,
         0x64, 'p','l','a','t', 0xf4,
+        0x68, 'c','r','e','d','M','g','m','t', 0xf5,
         /* Match the Java reference's complete PIN capability tuple. The
          * value false means PIN is not configured; protocol 1 is supported. */
         0x69, 'c','l','i','e','n','t','P','i','n', 0xf5,
@@ -322,6 +323,72 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
                                                response + 1, sizeof response - 1, &r);
         log_event("CTAP clientPIN status=0x%02x response_bytes=%zu", response[0], r);
         return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
+    }
+    if (p[0] == 0x0a) {
+        struct cbor_reader cr = {p + 1, n - 1, 0};
+        size_t fields = 0, params_start = 0, params_end = 0;
+        uint64_t subcommand = 0, protocol = 0; int have_sub = 0, have_protocol = 0;
+        const uint8_t *auth = NULL; size_t auth_len = 0;
+        if (cbor_read_map_len(&cr, &fields) != 0 || fields > 8) {
+            response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
+        for (size_t i = 0; i < fields; ++i) {
+            uint64_t key; if (cbor_read_uint(&cr, &key) != 0) {
+                response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            if (key == 1) {
+                if (cbor_read_uint(&cr, &subcommand) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                have_sub = 1;
+            } else if (key == 2) {
+                params_start = cr.pos;
+                if (cbor_skip(&cr) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                params_end = cr.pos;
+            } else if (key == 3) {
+                if (cbor_read_uint(&cr, &protocol) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                have_protocol = 1;
+            } else if (key == 4) {
+                if (cbor_read_bytes(&cr, &auth, &auth_len) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            } else if (cbor_skip(&cr) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+        }
+        if (!have_sub || !have_protocol || !auth || params_end <= params_start) {
+            response[0] = 0x14; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
+        uint8_t auth_data[1 + 2048];
+        if (params_end - params_start > sizeof auth_data - 1) { response[0] = 0x03; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+        auth_data[0] = (uint8_t)subcommand;
+        memcpy(auth_data + 1, p + 1 + params_start, params_end - params_start);
+        uint8_t pin_status = pifido_pin_verify_auth(pin_state, protocol, auth_data,
+                                                    1 + params_end - params_start,
+                                                    auth, auth_len);
+        if (pin_status != 0) { response[0] = pin_status; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+        if (subcommand == 1) {
+            struct cbor_writer w = {response + 1, sizeof response - 1, 0};
+            if (cbor_write_map_len(&w, 2) || cbor_write_uint(&w, 1) || cbor_write_uint(&w, store->count) ||
+                cbor_write_uint(&w, 2) || cbor_write_uint(&w, PIFIDO_MAX_CREDENTIALS - store->count)) {
+                response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
+            response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
+        }
+        if (subcommand == 6) {
+            struct cbor_reader pr = {p + 1 + params_start, params_end - params_start, 0};
+            size_t pn; const uint8_t *credential_id = NULL; size_t credential_id_len = 0;
+            if (cbor_read_map_len(&pr, &pn) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            for (size_t i = 0; i < pn; ++i) {
+                uint64_t key; if (cbor_read_uint(&pr, &key) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                if (key == 2) {
+                    size_t dn; if (cbor_read_map_len(&pr, &dn) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                    for (size_t j = 0; j < dn; ++j) { uint64_t dk; if (cbor_read_uint(&pr, &dk) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                        if (dk == 2) { if (cbor_read_bytes(&pr, &credential_id, &credential_id_len) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); } }
+                        else if (cbor_skip(&pr) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                    }
+                } else if (cbor_skip(&pr) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            }
+            if (!credential_id || pifido_store_delete_credential(store_path, credential_id, credential_id_len) != 0 ||
+                pifido_store_load(store_path, store) != 0) { response[0] = 0x2e; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+            response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
+        response[0] = CTAP2_ERR_INVALID_COMMAND;
+        return write_report(fd, cid, CTAPHID_CBOR, response, 1);
     }
     response[0] = CTAP2_ERR_INVALID_COMMAND;
     log_event("CTAP %s unsupported status=0x%02x", ctap_command_name(p, n), response[0]);

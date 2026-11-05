@@ -34,4 +34,9 @@ uint8_t pifido_pin_check_request(struct pifido_pin_state *state,
                                 const uint8_t *request, size_t request_len,
                                 int *user_verified);
 
+/* Verify a CTAP management pinUvAuthParam over the command-specific bytes. */
+uint8_t pifido_pin_verify_auth(struct pifido_pin_state *state, uint64_t protocol,
+                               const uint8_t *data, size_t data_len,
+                               const uint8_t *auth, size_t auth_len);
+
 #endif
