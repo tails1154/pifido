@@ -13,6 +13,12 @@ mountpoint -q /sys/kernel/config || {
     mount -t configfs configfs /sys/kernel/config || true
 }
 
+# Remove any stale composite gadget left by an interrupted authenticator start.
+for OLD in /sys/kernel/config/usb_gadget/*; do
+    [ -e "$OLD/UDC" ] || continue
+    printf '' > "$OLD/UDC" 2>/dev/null || true
+done
+
 mount -a 2>/dev/null || true
 mkdir -p /dev/ffs-authui
 mountpoint -q /dev/ffs-authui || mount -t functionfs authui /dev/ffs-authui || true
@@ -49,12 +55,10 @@ while :; do
     sleep 1
 done
 
-while :; do
-    echo 'PiFIDO init: starting authenticator' >/dev/console 2>/dev/null || true
-    LOG="$DATA/java.log"
-    /usr/lib/zulu/bin/java -Xms16m -Xmx64m -XX:TieredStopAtLevel=1 -Djava.io.tmpdir=/tmp -Dpifido.requireButton=true -jar /usr/lib/pifido/pifido.jar >"$LOG" 2>&1
-    RC=$?
-    tail -40 "$LOG" >/dev/console 2>/dev/null || true
-    echo "PiFIDO Java exited rc=$RC; retrying" >/dev/console 2>/dev/null || true
-    sleep 2
-done
+echo 'PiFIDO init: starting authenticator' >/dev/console 2>/dev/null || true
+LOG="$DATA/java.log"
+/usr/lib/zulu/bin/java -Xms16m -Xmx64m -XX:TieredStopAtLevel=1 -Djava.io.tmpdir=/tmp -Dpifido.requireButton=true -jar /usr/lib/pifido/pifido.jar >"$LOG" 2>&1
+RC=$?
+tail -60 "$LOG" >/dev/console 2>/dev/null || true
+echo "PiFIDO Java exited rc=$RC; halted for diagnostics" >/dev/console 2>/dev/null || true
+while :; do sleep 60; done
