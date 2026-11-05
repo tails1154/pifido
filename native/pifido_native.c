@@ -432,10 +432,11 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             management_state.rp_index++;
             uint8_t hash[32]; SHA256((const unsigned char *)rp, strlen(rp), hash);
             struct cbor_writer w = {response + 1, sizeof response - 1, 0};
-            if (cbor_write_map_len(&w, 3) || cbor_write_uint(&w, 3) || cbor_write_map_len(&w, 1) ||
+            /* enumerateRPsGetNextRP must omit totalRPs (key 5); Chromium
+             * rejects that field on continuation responses. */
+            if (cbor_write_map_len(&w, 2) || cbor_write_uint(&w, 3) || cbor_write_map_len(&w, 1) ||
                 cbor_write_text(&w, "id", 2) || cbor_write_text(&w, rp, strlen(rp)) ||
-                cbor_write_uint(&w, 4) || cbor_write_bytes(&w, hash, sizeof hash) ||
-                cbor_write_uint(&w, 5) || cbor_write_uint(&w, count_unique_rps(store))) {
+                cbor_write_uint(&w, 4) || cbor_write_bytes(&w, hash, sizeof hash)) {
                 response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
             }
             response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
