@@ -319,6 +319,8 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
      * registration response is substantially larger than a small CTAP status
      * response. Keep enough room for the full Java-compatible response. */
     uint8_t response[4096];
+    const char *encrypted_store = getenv("PIFIDO_STORE_ENCRYPTED");
+    if (!encrypted_store) encrypted_store = "/data/pifido/credentials.enc";
     size_t r = 0;
     if (n == 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
     if (p[0] == 0x04) {
@@ -363,6 +365,11 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
                                              user_verified,
                                              response + 1, sizeof response - 1, &r);
         if (make_rc == 0) {
+            if (pifido_secure_store_sync(encrypted_store, store_path, pin_state->pin_hash) != 0) {
+                response[0] = 0x7f;
+                log_event("CTAP makeCredential persistence failure");
+                return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+            }
             response[0] = 0;
             log_event("CTAP makeCredential status=0 response_bytes=%zu", r);
             return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
