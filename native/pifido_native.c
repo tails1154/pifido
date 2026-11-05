@@ -455,18 +455,18 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             const uint8_t *user_id = c->user_id_len ? c->user_id : c->credential_id;
             size_t user_id_len = c->user_id_len ? c->user_id_len : c->credential_id_len;
             struct cbor_writer w = {response + 1, sizeof response - 1, 0};
-            if (cbor_write_map_len(&w, 4) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 3) ||
+            /* enumerateCredentialsGetNextCredential must omit
+             * totalCredentials (key 9); it is only returned by begin. */
+            if (cbor_write_map_len(&w, 3) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 3) ||
                 cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, user_id, user_id_len) ||
                 cbor_write_text(&w, "name", 4) || cbor_write_text(&w, "stored-credential", 17) ||
                 cbor_write_text(&w, "displayName", 11) || cbor_write_text(&w, "Stored credential", 17) ||
                 cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "id", 2) ||
                 cbor_write_bytes(&w, c->credential_id, c->credential_id_len) ||
                 cbor_write_text(&w, "type", 4) || cbor_write_text(&w, "public-key", 10) ||
-                cbor_write_uint(&w, 8) || public_key_cose(c, &w) || cbor_write_uint(&w, 9)) {
+                cbor_write_uint(&w, 8) || public_key_cose(c, &w)) {
                 response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
             }
-            size_t total = 0; for (size_t i = 0; i < store->count; ++i) if (strcmp(store->credentials[i].rp_id, management_state.rp_id) == 0) ++total;
-            if (cbor_write_uint(&w, total) != 0) { response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
             management_state.credential_index = (int)idx + 1;
             response[0] = 0; return write_report(fd, cid, CTAPHID_CBOR, response, w.pos + 1);
         }
