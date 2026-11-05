@@ -12,6 +12,9 @@ final class ManagementHidServer implements Runnable {
     private final ConfigurationFile config;
     private final Gson gson = new Gson();
     ManagementHidServer(ConfigurationFile config) { this.config = config; }
+    void prepare() throws java.io.IOException {
+        try (RandomAccessFile ep0 = new RandomAccessFile("/dev/ffs-authui/ep0", "rw")) { ep0.write(descriptors()); }
+    }
     void start() { Thread t = new Thread(this, "pifido-management"); t.setDaemon(true); t.start(); }
     @Override public void run() {
         while (true) try (RandomAccessFile ep0 = new RandomAccessFile("/dev/ffs-authui/ep0", "rw")) {

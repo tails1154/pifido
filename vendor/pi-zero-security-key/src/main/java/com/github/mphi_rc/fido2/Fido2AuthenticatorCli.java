@@ -30,8 +30,9 @@ public class Fido2AuthenticatorCli {
 		configFs.initialize(fido2Gadget);
 		// FunctionFS must publish its descriptors before the composite gadget is
 		// bound to the UDC, otherwise Linux rejects the ffs function with ENODEV.
-		new ManagementHidServer(config).start();
-		Thread.sleep(250L);
+		ManagementHidServer management = new ManagementHidServer(config);
+		management.prepare();
+		management.start();
 		configFs.attach(fido2Gadget, config.usbDeviceController());
 
 		Fido2Authenticator authenticator = new Fido2Authenticator(config);
