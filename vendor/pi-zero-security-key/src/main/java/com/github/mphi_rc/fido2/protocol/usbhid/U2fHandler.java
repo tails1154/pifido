@@ -64,6 +64,13 @@ final class U2fHandler {
 
     private byte[] register(byte[] d) throws Exception {
         byte[] challenge = Arrays.copyOfRange(d, 0, 32), app = Arrays.copyOfRange(d, 32, 64);
+        // Chrome sends this deterministic dummy registration to probe whether
+        // a CTAP1 authenticator has user presence. It must not create a
+        // credential or return a successful registration response.
+        if (allBytes(challenge, (byte) 0x42) && allBytes(app, (byte) 0x41)) {
+            log.info("Rejecting Chrome dummy U2F registration probe");
+            return status(0x6985);
+        }
         String rp = hex(app);
         if (!config.userVerifier().isRegistrationApproved(rp)) return status(0x6985);
         P256AttestationKeyPair key = P256AttestationKeyPair.generate();
@@ -99,6 +106,7 @@ final class U2fHandler {
     private static byte[] status(int v) { return new byte[]{(byte)(v >>> 8), (byte)v}; }
     private static byte[] concat(byte[]... xs) { ByteArrayOutputStream o = new ByteArrayOutputStream(); for (byte[] x: xs) o.write(x,0,x.length); return o.toByteArray(); }
     private static String hex(byte[] b) { StringBuilder s=new StringBuilder(); for(byte x:b)s.append(String.format("%02x",x)); return s.toString(); }
+    private static boolean allBytes(byte[] b, byte value) { for (byte x : b) if (x != value) return false; return true; }
     private static byte[] makeCertificate() {
         try {
             PrivateKey k = KeyFactory.getInstance("EC", "BC").generatePrivate(new PKCS8EncodedKeySpec(ATTESTATION.privateKey()));
