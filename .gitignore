@@ -16,6 +16,7 @@ vendor/pi-zero-security-key/build/
 vendor/pi-zero-security-key/.classpath
 vendor/pi-zero-security-key/.project
 vendor/pi-zero-security-key/.settings/
+vendor/pi-zero-security-key/.git.upstream/
 
 # Editor/OS files
 .DS_Store
