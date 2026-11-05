@@ -1,9 +1,13 @@
+#define _GNU_SOURCE
 #include "store.h"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int b64_value(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
@@ -12,6 +16,24 @@ static int b64_value(char c) {
     if (c == '+') return 62;
     if (c == '/') return 63;
     return -1;
+}
+
+static size_t b64_encode(const uint8_t *in, size_t len, char *out, size_t cap) {
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t w = 0;
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        if (i + 1 < len) v |= (uint32_t)in[i + 1] << 8;
+        if (i + 2 < len) v |= in[i + 2];
+        size_t needed = w + 4;
+        if (needed + 1 > cap) return 0;
+        out[w++] = alphabet[(v >> 18) & 63];
+        out[w++] = alphabet[(v >> 12) & 63];
+        out[w++] = i + 1 < len ? alphabet[(v >> 6) & 63] : '=';
+        out[w++] = i + 2 < len ? alphabet[v & 63] : '=';
+    }
+    out[w] = '\0';
+    return w;
 }
 
 int pifido_base64_decode(const char *text, uint8_t *out, size_t cap, size_t *out_len) {
@@ -133,4 +155,88 @@ int pifido_store_load(const char *path, struct pifido_store *store) {
     }
     free(json);
     return 0;
+}
+
+int pifido_store_increment_counter(const char *path, const uint8_t *credential_id,
+                                   size_t credential_id_len, uint32_t *new_count) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long size = ftell(f);
+    if (size <= 0 || size > 4 * 1024 * 1024) { fclose(f); return -1; }
+    rewind(f);
+    char *json = calloc((size_t)size + 1, 1);
+    if (!json) { fclose(f); return -1; }
+    size_t got = fread(json, 1, (size_t)size, f);
+    fclose(f);
+    if (got != (size_t)size) { free(json); return -1; }
+
+    char encoded[128];
+    if (!b64_encode(credential_id, credential_id_len, encoded, sizeof encoded)) { free(json); return -1; }
+    char escaped[256];
+    size_t ew = 0;
+    for (size_t i = 0; encoded[i] && ew + 6 < sizeof escaped; ++i) {
+        if (encoded[i] == '=') {
+            memcpy(escaped + ew, "\\u003d", 6); ew += 6;
+        } else escaped[ew++] = encoded[i];
+    }
+    escaped[ew] = '\0';
+    char needle[320];
+    snprintf(needle, sizeof needle, "\"id\": \"%s\"", encoded);
+    char *id = strstr(json, needle);
+    if (!id) {
+        snprintf(needle, sizeof needle, "\"id\": \"%s\"", escaped);
+        id = strstr(json, needle);
+    }
+    if (!id) { free(json); return -1; }
+    char *counter = NULL;
+    for (char *scan = strstr(json, "\"signatureCount\"");
+         scan && scan < id; scan = strstr(scan + 1, "\"signatureCount\""))
+        counter = scan;
+    if (!counter) { free(json); return -1; }
+    counter = strchr(counter, ':');
+    if (!counter) { free(json); return -1; }
+    ++counter;
+    while (*counter == ' ' || *counter == '\t') ++counter;
+    char *end = NULL;
+    unsigned long old = strtoul(counter, &end, 10);
+    if (end == counter || old >= UINT32_MAX) { free(json); return -1; }
+    char replacement[32];
+    int replacement_len = snprintf(replacement, sizeof replacement, "%lu", old + 1);
+    size_t tail_len = strlen(end);
+    size_t prefix_len = (size_t)(counter - json);
+    size_t new_len = prefix_len + (size_t)replacement_len + tail_len;
+    char *updated = malloc(new_len + 1);
+    if (!updated) { free(json); return -1; }
+    memcpy(updated, json, prefix_len);
+    memcpy(updated + prefix_len, replacement, (size_t)replacement_len);
+    memcpy(updated + prefix_len + replacement_len, end, tail_len + 1);
+
+    char temp_path[4096];
+    int path_len = snprintf(temp_path, sizeof temp_path, "%s.tmp.%ld", path, (long)getpid());
+    if (path_len < 0 || (size_t)path_len >= sizeof temp_path) { free(updated); free(json); return -1; }
+    int fd = open(temp_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) { free(updated); free(json); return -1; }
+    int rc = 0;
+    if (write(fd, updated, new_len) != (ssize_t)new_len || fsync(fd) != 0) rc = -1;
+    if (close(fd) != 0) rc = -1;
+    if (rc == 0 && rename(temp_path, path) != 0) rc = -1;
+    if (rc == 0) {
+        char directory[4096];
+        const char *slash = strrchr(path, '/');
+        size_t dlen = slash ? (size_t)(slash - path) : 1;
+        if (dlen >= sizeof directory) rc = -1;
+        else {
+            if (slash) memcpy(directory, path, dlen); else directory[0] = '.';
+            directory[dlen] = '\0';
+            int dfd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (dfd < 0 || fsync(dfd) != 0) rc = -1;
+            if (dfd >= 0) close(dfd);
+        }
+    }
+    if (rc != 0) unlink(temp_path);
+    if (new_count) *new_count = (uint32_t)(old + 1);
+    free(updated);
+    free(json);
+    return rc;
 }
