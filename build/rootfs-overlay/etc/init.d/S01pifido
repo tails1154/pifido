@@ -24,12 +24,18 @@ mkdir -p /dev/ffs-authui
 mountpoint -q /dev/ffs-authui || mount -t functionfs authui /dev/ffs-authui || true
 mkdir -p /data
 if ! mountpoint -q /data; then
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        if [ -b /dev/mmcblk0p2 ] && mount -t ext4 -o noatime,commit=1 /dev/mmcblk0p2 /data 2>/dev/null; then
+    for i in $(seq 1 30); do
+        if [ -b /dev/mmcblk0p2 ] && mount -t ext4 -o noatime,commit=1 /dev/mmcblk0p2 /data 2>/tmp/pifido-mount.err; then
             break
         fi
-        sleep 0.2
+        sleep 1
     done
+fi
+if ! mountpoint -q /data; then
+    echo 'PiFIDO init: DATA MOUNT FAILED' >/dev/console 2>/dev/null || true
+    cat /tmp/pifido-mount.err >/dev/console 2>/dev/null || true
+else
+    echo 'PiFIDO init: data mounted' >/dev/console 2>/dev/null || true
 fi
 
 # Optional two-wire presence contact: BCM GPIO26 to a nearby GND pin.
