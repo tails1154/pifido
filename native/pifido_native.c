@@ -411,8 +411,17 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
                 if (cbor_read_bytes(&cr, &auth, &auth_len) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
             } else if (cbor_skip(&cr) != 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
         }
-        if (!have_sub || ((subcommand != 3 && subcommand != 5) &&
-                          (!have_protocol || !auth || params_end <= params_start))) {
+        if (!have_sub) {
+            response[0] = 0x14; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
+        /* CTAP credential-management metadata and enumerate-RPs-begin use no
+         * subCommandParams.  Only operations that carry a parameter map
+         * require one; get-next operations require neither auth nor params. */
+        int needs_auth = subcommand == 1 || subcommand == 2 ||
+                         subcommand == 4 || subcommand == 6 || subcommand == 7;
+        int needs_params = subcommand == 4 || subcommand == 6 || subcommand == 7;
+        if (needs_auth && (!have_protocol || !auth ||
+                           (needs_params && params_end <= params_start))) {
             response[0] = 0x14; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
         }
         if (subcommand == 3) {
