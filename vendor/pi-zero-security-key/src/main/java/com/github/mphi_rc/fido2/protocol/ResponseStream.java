@@ -49,7 +49,9 @@ public class ResponseStream implements Consumer<RawMessage>, AutoCloseable {
 	private Packet serializeToInitPacket(RawMessage m) {
 		try {
 			byte[] channel = m.channelId().id();
-			byte command = m.command().asByte();
+			// CTAPHID initialization packets set bit 7; continuation packets use
+			// the sequence number without that bit.
+			byte command = (byte) (m.command().asByte() | 0x80);
 			byte[] payload = m.payload();
 			int lengthHigh = (payload.length >>> 8) & 0xFF;
 			int lengthLow = payload.length & 0x00FF;
