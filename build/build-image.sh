@@ -40,6 +40,7 @@ chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/init"
 make -C "$BUILDROOT_DIR" raspberrypi0w_defconfig
 cat >> "$BUILDROOT_DIR/.config" <<EOF
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
+BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 BR2_ROOTFS_OVERLAY="$BUILDROOT_DIR/board/pifido-overlay"
 BR2_PACKAGE_RPI_FIRMWARE_CONFIG_FILE="$PROJECT_ROOT/build/rpi-config.txt"
@@ -51,6 +52,24 @@ BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$PROJECT_ROOT/build/kernel.fragment"
 EOF
 make -C "$BUILDROOT_DIR" olddefconfig
 make -C "$BUILDROOT_DIR" -j"$(nproc)"
+
+# Keep the kernel small: the complete runtime is supplied as an external
+# initramfs. The overlay archive is appended after the base rootfs so its
+# current authenticator JAR and startup files override the base copies.
+cat "$BUILDROOT_DIR/output/images/rootfs.cpio.gz" "$PROJECT_ROOT/pifido-update.cpio.gz" \
+    > "$BUILDROOT_DIR/output/images/pifido-full.cpio.gz"
+GENIMAGE_CFG="$BUILDROOT_DIR/output/images/genimage.cfg"
+if ! grep -q 'pifido-full.cpio.gz' "$GENIMAGE_CFG"; then
+    sed -i '/"zImage",/a\			"pifido-full.cpio.gz",' "$GENIMAGE_CFG"
+fi
+GENIMAGE_TMP=$(mktemp -d -p "$BUILDROOT_DIR" pifido-genimage.XXXXXX)
+mkdir -p "$GENIMAGE_TMP/root" "$GENIMAGE_TMP/tmp"
+"$BUILDROOT_DIR/output/host/bin/genimage" \
+    --rootpath "$GENIMAGE_TMP/root" \
+    --tmppath "$GENIMAGE_TMP/tmp" \
+    --inputpath "$BUILDROOT_DIR/output/images" \
+    --outputpath "$BUILDROOT_DIR/output/images" \
+    --config "$GENIMAGE_CFG"
 
 mkdir -p "$OUTPUT_DIR/images"
 cp "$BUILDROOT_DIR/output/images/sdcard.img" "$OUTPUT_DIR/images/sdcard.img"
