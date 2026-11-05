@@ -18,7 +18,10 @@
 
 #define PIN_RETRIES_MAX 8u
 #define PIN_PROTOCOL_ONE 1u
-#define PIN_TOKEN_LIFETIME 30
+/* Credential-management enumeration can involve many round trips. Keep the
+ * token short-lived when idle, but long enough for Chromium to finish a
+ * multi-credential operation; successful authenticated use refreshes it. */
+#define PIN_TOKEN_LIFETIME 120
 #define CTAP_OK 0x00
 #define CTAP_INVALID_PARAMETER 0x02
 #define CTAP_INVALID_CBOR 0x12
@@ -459,6 +462,7 @@ uint8_t pifido_pin_check_request(struct pifido_pin_state *s, uint8_t command,
     OPENSSL_cleanse(expected, sizeof expected);
     if (!ok) return CTAP_PIN_AUTH_INVALID;
     *user_verified = 1;
+    s->token_expiry = time(NULL) + PIN_TOKEN_LIFETIME;
     return CTAP_OK;
 }
 
@@ -475,5 +479,6 @@ uint8_t pifido_pin_verify_auth(struct pifido_pin_state *s, uint64_t protocol,
     int ok = mac16(s->token, data, data_len, expected) == 0 &&
              CRYPTO_memcmp(expected, auth, 16) == 0;
     OPENSSL_cleanse(expected, sizeof expected);
+    if (ok) s->token_expiry = time(NULL) + PIN_TOKEN_LIFETIME;
     return ok ? CTAP_OK : CTAP_PIN_AUTH_INVALID;
 }
