@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "store.h"
+#include "crypto.h"
 
 #define HID_REPORT_SIZE 64
 #define CTAPHID_INIT 0x86
@@ -161,6 +162,19 @@ int main(int argc, char **argv) {
         if (pifido_store_load(argv[2], &store) != 0) return 1;
         printf("loaded %zu credentials\n", store.count);
         return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "--crypto-test") == 0) {
+        struct pifido_store store;
+        uint8_t digest[32] = {0};
+        uint8_t signature[128];
+        size_t signature_len = 0;
+        if (pifido_store_load(argv[2], &store) != 0 || store.count == 0)
+            return 1;
+        if (pifido_sign_sha256(&store.credentials[0], digest, signature,
+                               sizeof signature, &signature_len) != 0)
+            return 1;
+        return pifido_verify_sha256(&store.credentials[0], digest, signature,
+                                    signature_len) == 0 ? 0 : 1;
     }
     if (argc != 3 || strcmp(argv[1], "--hid") != 0) {
         fprintf(stderr, "usage: %s --hid /dev/hidg0\n", argv[0]);
