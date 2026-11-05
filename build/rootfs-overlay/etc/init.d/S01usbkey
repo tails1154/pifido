@@ -74,7 +74,7 @@ if [ -z "$UDC" ]; then
     log_line 'USB FIDO2: no UDC found'
     while :; do sleep 30; done
 fi
-log_line 'creating ConfigFS HID and CDC-ACM functions'
+log_line 'creating ConfigFS HID function'
 
 # Detach only stale ConfigFS gadgets, then create one HID CTAPHID function.
 for old_udc in /sys/kernel/config/usb_gadget/*/UDC; do
@@ -82,8 +82,7 @@ for old_udc in /sys/kernel/config/usb_gadget/*/UDC; do
     [ -s "$old_udc" ] && printf '\n' >"$old_udc" || true
 done
 mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" \
-    "$G/functions/hid.usb0" "$G/functions/acm.usb0"
-log_line 'USB serial diagnostics enabled'
+    "$G/functions/hid.usb0"
 log_line 'ConfigFS directories created'
 cfg_attr() {
     attr=$1
@@ -124,16 +123,10 @@ cfg_attr "$G/functions/hid.usb0/subclass" 0
 cfg_attr "$G/functions/hid.usb0/report_length" 64
 (cd "$G" && ln -sf functions/hid.usb0 configs/c.1/hid.usb0)
 log_line 'HID function linked'
-(cd "$G" && ln -sf functions/acm.usb0 configs/c.1/acm.usb0)
-log_line 'ACM function linked'
 printf '%s' "$UDC" >"$G/UDC"
 log_line "FIDO2 HID attached UDC=$UDC"
 
-# Do not write synchronously to ttyGS0. The background stream exposes boot
-# and native diagnostics after the host opens the serial port.
 : > /data/pifido-native.log
-tail -f "$LOG" /data/pifido-native.log /data/pifido-native-console.log >/dev/ttyGS0 2>/dev/null &
-
 if [ -x /usr/bin/pifido-native ]; then
     log_line 'native C authenticator selected'
     PIFIDO_LOG=/data/pifido-native.log PIFIDO_STORE=/run/pifido/credentials.json \
