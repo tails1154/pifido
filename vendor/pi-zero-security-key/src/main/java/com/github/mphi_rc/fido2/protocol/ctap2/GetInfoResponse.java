@@ -41,7 +41,7 @@ public abstract class GetInfoResponse {
 					.put(AAGUID_KEY, aaguid())
 					.putMap(OPTIONS_KEY)
 						.put(PLATFORM_OPTION, false)
-						.put(RESIDENT_KEY_OPTION, false)
+						.put(RESIDENT_KEY_OPTION, true)
 						.put(USER_PRESENCE_OPTION, true)
 						.put(CLIENT_PIN_OPTION, isPinConfigured())
 					.end()
