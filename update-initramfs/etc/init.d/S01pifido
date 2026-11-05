@@ -67,7 +67,12 @@ done
 
 echo 'PiFIDO init: starting authenticator' >/dev/console 2>/dev/null || true
 LOG="$DATA/java.log"
-/usr/lib/zulu/bin/java -Xms16m -Xmx64m -XX:TieredStopAtLevel=1 -Djava.io.tmpdir=/tmp -Dpifido.requireButton=false -jar /usr/lib/pifido/pifido.jar >"$LOG" 2>&1
+/usr/lib/zulu/bin/java -Xms16m -Xmx64m -XX:TieredStopAtLevel=1 \
+    -Djava.io.tmpdir=/tmp -Dpifido.requireButton=false \
+    -Dorg.slf4j.simpleLogger.defaultLogLevel=trace \
+    -Dorg.slf4j.simpleLogger.showDateTime=true \
+    -Dorg.slf4j.simpleLogger.showThreadName=true \
+    -jar /usr/lib/pifido/pifido.jar 2>&1 | tee "$LOG" >/dev/console
 RC=$?
 tail -60 "$LOG" >/dev/console 2>/dev/null || true
 echo "PiFIDO Java exited rc=$RC; halted for diagnostics" >/dev/console 2>/dev/null || true
