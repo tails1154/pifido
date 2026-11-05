@@ -31,9 +31,9 @@ int pifido_get_assertion(const uint8_t *request, size_t request_len,
                 size_t fields;
                 if (cbor_read_map_len(&r, &fields) != 0) return -1;
                 for (size_t j = 0; j < fields; ++j) {
-                    uint64_t k;
-                    if (cbor_read_uint(&r, &k) != 0) return -1;
-                    if (k == 2) {
+                    const char *k; size_t key_len;
+                    if (cbor_read_text(&r, &k, &key_len) != 0) return -1;
+                    if (key_len == 2 && memcmp(k, "id", 2) == 0) {
                         if (cbor_read_bytes(&r, &allow_id, &allow_id_len) != 0) return -1;
                     } else if (cbor_skip(&r) != 0) return -1;
                 }
