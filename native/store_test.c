@@ -39,6 +39,14 @@ int main(void) {
                                     id2, sizeof id2, priv, sizeof priv,
                                     pub, sizeof pub) != 0) return 1;
     if (pifido_store_load(copy, &s) != 0 || s.count != 1) return 1;
+    const char legacy[] = "{}";
+    fd = open(copy, O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0 || write(fd, legacy, sizeof legacy - 1) != (ssize_t)(sizeof legacy - 1)) return 1;
+    close(fd);
+    if (pifido_store_add_credential(copy, "legacy-empty.test", uid, sizeof uid,
+                                    id2, sizeof id2, priv, sizeof priv,
+                                    pub, sizeof pub) != 0) return 1;
+    if (pifido_store_load(copy, &s) != 0 || s.count != 1) return 1;
     unlink(copy);
     puts("credential store self-test passed");
     return 0;

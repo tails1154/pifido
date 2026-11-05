@@ -325,7 +325,22 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
     const char *marker = strstr(json, "\"credentials\"");
     const char *open = marker ? strchr(marker, '[') : NULL;
     const char *close = open ? strchr(open, ']') : NULL;
-    if (!open || !close) { free(json); return store_fail("add:credentials-array"); }
+    if (!open || !close) {
+        /* Older empty stores could decrypt successfully but contain no
+         * credentials member.  Normalize that zero-credential state before
+         * appending; never do this when pifido_store_load found credentials. */
+        struct pifido_store existing;
+        if (pifido_store_load(path, &existing) != 0 || existing.count != 0) {
+            free(json); return store_fail("add:credentials-array");
+        }
+        free(json);
+        json = strdup("{\"credentials\":[]}");
+        if (!json) return store_fail("add:alloc-empty-store");
+        size = (long)strlen(json);
+        marker = json;
+        open = strchr(marker, '[');
+        close = strchr(open, ']');
+    }
     int has_existing = 0;
     for (const char *q = open + 1; q < close; ++q) if (!isspace((unsigned char)*q)) { has_existing = 1; break; }
     char item[8192];
