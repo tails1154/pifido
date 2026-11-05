@@ -451,9 +451,9 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             struct cbor_writer w = {response + 1, sizeof response - 1, 0};
             if (cbor_write_map_len(&w, 4) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 1) ||
                 cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, c->user_id, c->user_id_len) ||
-                cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "type", 4) ||
-                cbor_write_text(&w, "public-key", 10) || cbor_write_text(&w, "id", 2) ||
+                cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "id", 2) ||
                 cbor_write_bytes(&w, c->credential_id, c->credential_id_len) ||
+                cbor_write_text(&w, "type", 4) || cbor_write_text(&w, "public-key", 10) ||
                 cbor_write_uint(&w, 8) || public_key_cose(c, &w) || cbor_write_uint(&w, 9)) {
                 response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
             }
@@ -508,9 +508,9 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
             struct cbor_writer w = {response + 1, sizeof response - 1, 0};
             if (cbor_write_map_len(&w, 4) || cbor_write_uint(&w, 6) || cbor_write_map_len(&w, 1) ||
                 cbor_write_text(&w, "id", 2) || cbor_write_bytes(&w, c->user_id, c->user_id_len) ||
-                cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "type", 4) ||
-                cbor_write_text(&w, "public-key", 10) || cbor_write_text(&w, "id", 2) ||
+                cbor_write_uint(&w, 7) || cbor_write_map_len(&w, 2) || cbor_write_text(&w, "id", 2) ||
                 cbor_write_bytes(&w, c->credential_id, c->credential_id_len) ||
+                cbor_write_text(&w, "type", 4) || cbor_write_text(&w, "public-key", 10) ||
                 cbor_write_uint(&w, 8) || public_key_cose(c, &w) || cbor_write_uint(&w, 9) ||
                 cbor_write_uint(&w, total)) {
                 response[0] = 0x7f; return write_report(fd, cid, CTAPHID_CBOR, response, 1);
