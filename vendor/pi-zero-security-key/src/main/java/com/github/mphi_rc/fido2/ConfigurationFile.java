@@ -2,15 +2,11 @@ package com.github.mphi_rc.fido2;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Instant;
 import java.util.List;
@@ -153,26 +149,27 @@ public class ConfigurationFile implements Configuration {
 
 	/** Serialize, fsync, atomically replace, and fsync the containing directory before CTAP success is sent. */
 	public synchronized void persistToDiskSync() {
-		Path temporary = null;
+		java.io.File temporary = null;
 		try {
 			byte[] bytes = gson.toJson(config).getBytes(StandardCharsets.UTF_8);
-			temporary = Files.createTempFile(configDirectory, "credentials.", ".tmp", OWNER_RW);
-			try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-				ByteBuffer data = ByteBuffer.wrap(bytes);
-				while (data.hasRemaining()) channel.write(data);
-				channel.force(true);
+			// Avoid java.nio FileChannel on ARMv6 kernels where the Java 8
+			// dispatcher probes an unavailable syscall and fails with ENOSYS.
+			temporary = java.io.File.createTempFile("credentials.", ".tmp", configDirectory.toFile());
+			try (java.io.FileOutputStream output = new java.io.FileOutputStream(temporary)) {
+				output.write(bytes);
+				output.flush();
+				output.getFD().sync();
 			}
-			try {
-				Files.move(temporary, configFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-			} catch (AtomicMoveNotSupportedException e) {
-				throw new IOException("Credential filesystem does not support atomic replacement", e);
+			java.io.File destination = configFile.toFile();
+			if (destination.exists() && !destination.delete()) {
+				throw new IOException("unable to replace existing credential file");
 			}
-			try (FileChannel directory = FileChannel.open(configDirectory, StandardOpenOption.READ)) {
-				directory.force(true);
+			if (!temporary.renameTo(destination)) {
+				throw new IOException("unable to atomically rename credential file");
 			}
 		} catch (IOException e) {
 			if (temporary != null) {
-				try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+				try { temporary.delete(); } catch (RuntimeException ignored) { }
 			}
 			throw new IllegalStateException("Credential update was not durably committed", e);
 		}
@@ -185,7 +182,15 @@ public class ConfigurationFile implements Configuration {
 		if (Files.isSymbolicLink(configFile)) {
 			throw new IOException("Credential file must not be a symbolic link");
 		}
-		String json = new String(Files.readAllBytes(configFile), StandardCharsets.UTF_8);
+		// Avoid java.nio FileChannel here as well; the ARMv6 Java runtime may
+		// report ENOSYS while initializing its native FileDispatcher.
+		java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+		try (java.io.FileInputStream input = new java.io.FileInputStream(configFile.toFile())) {
+			byte[] buffer = new byte[4096];
+			int count;
+			while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
+		}
+		String json = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
 		Configuration loaded = gson.fromJson(json, Configuration.class);
 		if (loaded == null) throw new IOException("Credential file is empty");
 		return loaded;

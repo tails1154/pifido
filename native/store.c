@@ -297,8 +297,9 @@ int pifido_store_add_credential(const char *path, const char *rp_id,
     char *json = calloc((size_t)size + 1, 1); if (!json) { fclose(f); return -1; }
     size_t got = fread(json, 1, (size_t)size, f); fclose(f);
     if (got != (size_t)size) { free(json); return -1; }
-    char user[1024], id[1024], priv[2048], pub[2048];
-    if (!escape_b64(user_id, user_id_len, user, sizeof user) ||
+    char user[1024] = "", id[1024], priv[2048], pub[2048];
+    /* An empty userId is valid for the Java U2F compatibility path. */
+    if ((user_id_len && !escape_b64(user_id, user_id_len, user, sizeof user)) ||
         !escape_b64(credential_id, credential_id_len, id, sizeof id) ||
         !escape_b64(private_key_der, private_key_der_len, priv, sizeof priv) ||
         !escape_b64(public_key_der, public_key_der_len, pub, sizeof pub)) { free(json); return -1; }

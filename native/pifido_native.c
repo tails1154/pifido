@@ -9,16 +9,22 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <sys/random.h>
 #include <unistd.h>
+#include <openssl/x509.h>
 
 #include "store.h"
 #include "crypto.h"
 #include "ctap.h"
 #include "cbor.h"
+#include "pin.h"
+#include "u2f.h"
 
 #define HID_REPORT_SIZE 64
 #define CTAPHID_INIT 0x86
@@ -38,21 +44,76 @@
 #define CTAP2_ERR_INVALID_CBOR 0x12
 #define CTAP2_ERR_NO_CREDENTIALS 0x2e
 
-static size_t u2f_apdu(uint8_t *out, size_t cap, const uint8_t *apdu, size_t len) {
-    /* Keep the legacy CTAPHID_MSG path well-formed.  Chromium may probe a
-     * FIDO2 device with U2F VERSION before selecting CTAP2. */
-    if (cap < 2) return 0;
-    if (len >= 2 && apdu[1] == 0x03) {
-        static const uint8_t version[] = {'U','2','F','_','V','2',0x90,0x00};
-        if (cap < sizeof version) return 0;
-        memcpy(out, version, sizeof version);
-        return sizeof version;
+static int log_fd = -1;
+static int console_fd = -1;
+static const uint8_t default_pin_hash[16] = {
+    0x06, 0xec, 0x44, 0xcc, 0xee, 0x3b, 0x23, 0xb9,
+    0xe0, 0x67, 0xe9, 0x6a, 0xfb, 0x79, 0x6d, 0x3b
+};
+
+/* Log transport metadata only. CTAP payloads can contain PIN material,
+ * credential IDs, user handles, and clientDataHash values, so payload bytes
+ * are deliberately never written to persistent diagnostics. */
+static void log_event(const char *format, ...) {
+    if (log_fd < 0 && console_fd < 0) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    gmtime_r(&ts.tv_sec, &tm);
+    char stamp[32];
+    strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%S", &tm);
+    char prefix[48];
+    int prefix_len = snprintf(prefix, sizeof prefix, "%s.%03ldZ ", stamp,
+                              ts.tv_nsec / 1000000L);
+    if (prefix_len < 0) return;
+    va_list ap;
+    va_start(ap, format);
+    if (log_fd >= 0) {
+        dprintf(log_fd, "%s", prefix);
+        va_list copy;
+        va_copy(copy, ap);
+        vdprintf(log_fd, format, copy);
+        va_end(copy);
+        dprintf(log_fd, "\n");
+        (void)fdatasync(log_fd);
     }
-    /* Native CTAP2 is the supported registration/authentication path.  A
-     * legacy request is rejected with CONDITIONS_NOT_SATISFIED rather than
-     * being silently treated as success or mapped to a different protocol. */
-    out[0] = 0x69; out[1] = 0x85;
-    return 2;
+    if (console_fd >= 0) {
+        dprintf(console_fd, "PiFIDO %s", prefix);
+        va_list copy;
+        va_copy(copy, ap);
+        vdprintf(console_fd, format, copy);
+        va_end(copy);
+        dprintf(console_fd, "\n");
+    }
+    va_end(ap);
+}
+
+static const char *hid_command_name(uint8_t cmd) {
+    switch (cmd) {
+    case CTAPHID_INIT: return "INIT";
+    case CTAPHID_PING: return "PING";
+    case CTAPHID_CBOR: return "CBOR";
+    case CTAPHID_MSG: return "MSG";
+    case CTAPHID_ERROR: return "ERROR";
+    case CTAPHID_KEEPALIVE: return "KEEPALIVE";
+    default: return "UNKNOWN";
+    }
+}
+
+static const char *ctap_command_name(const uint8_t *data, size_t len) {
+    if (!len) return "empty";
+    switch (data[0]) {
+    case 0x01: return "makeCredential";
+    case 0x02: return "getAssertion";
+    case 0x04: return "getInfo";
+    case 0x06: return "clientPIN";
+    case 0x07: return "reset";
+    case 0x08: return "getNextAssertion";
+    case 0x0a: return "bioEnrollment";
+    case 0x0b: return "credentialManagement";
+    case 0x0c: return "authenticatorConfig";
+    default: return "unknown";
+    }
 }
 
 struct hid_state {
@@ -65,6 +126,39 @@ struct hid_state {
 };
 
 static uint32_t assigned_cid = 0;
+static uint8_t device_aaguid[16];
+
+static int ensure_store_file(const char *path) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return errno == EEXIST ? 0 : -1;
+    static const char empty_store[] = "{\"credentials\":[]}";
+    ssize_t written = write(fd, empty_store, sizeof empty_store - 1);
+    int ok = written == (ssize_t)(sizeof empty_store - 1) && fsync(fd) == 0;
+    if (close(fd) != 0) ok = 0;
+    if (!ok) unlink(path);
+    return ok ? 0 : -1;
+}
+
+static int load_or_create_aaguid(const char *path) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd >= 0) {
+        ssize_t n = read(fd, device_aaguid, sizeof device_aaguid);
+        close(fd);
+        return n == (ssize_t)sizeof device_aaguid ? 0 : -1;
+    }
+    if (errno != ENOENT || getrandom(device_aaguid, sizeof device_aaguid, 0) != (ssize_t)sizeof device_aaguid)
+        return -1;
+    char tmp[512];
+    int n = snprintf(tmp, sizeof tmp, "%s.tmp.%ld", path, (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof tmp) return -1;
+    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) return -1;
+    int ok = write(fd, device_aaguid, sizeof device_aaguid) == (ssize_t)sizeof device_aaguid && fsync(fd) == 0;
+    if (close(fd) != 0) ok = 0;
+    if (ok && rename(tmp, path) != 0) ok = 0;
+    if (!ok) unlink(tmp);
+    return ok ? 0 : -1;
+}
 
 static uint32_t be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -96,23 +190,41 @@ static int write_report(int fd, uint32_t cid, uint8_t cmd,
     if (len > 0xffffu) return -1;
     while (off == 0 || off < len) {
         memset(report, 0, sizeof report);
+        size_t chunk;
         put_be32(report, cid);
         if (off == 0) {
-            size_t n = len < 57 ? len : 57;
+            chunk = len < 57 ? len : 57;
             report[4] = cmd;
             put_be16(report + 5, (uint16_t)len);
-            if (n) memcpy(report + 7, data, n);
-            off += n;
+            if (chunk) memcpy(report + 7, data, chunk);
+            off += chunk;
         } else {
-            size_t n = (len - off) < 59 ? (len - off) : 59;
+            chunk = (len - off) < 59 ? (len - off) : 59;
             report[4] = seq++;
-            memcpy(report + 5, data + off, n);
-            off += n;
+            memcpy(report + 5, data + off, chunk);
+            off += chunk;
         }
+        log_event("TX report cid=%08x cmd=%s(0x%02x) seq=%u total=%zu chunk=%zu header=%02x%02x%02x%02x%02x%02x%02x payload=<redacted>",
+                  cid, hid_command_name(cmd), cmd, seq ? (unsigned)(seq - 1) : 0,
+                  len, chunk, report[0], report[1], report[2], report[3],
+                  report[4], report[5], report[6]);
         ssize_t n = write(fd, report, sizeof report);
-        if (n != (ssize_t)sizeof report) return -1;
+        if (n != (ssize_t)sizeof report) {
+            log_event("TX failure cmd=%s errno=%d (%s)", hid_command_name(cmd), errno, strerror(errno));
+            return -1;
+        }
     }
     return 0;
+}
+
+/* The credential and PIN writers already fsync their temporary file and
+ * containing directory. Add a conservative system-wide barrier after every
+ * completed HID operation as well, because this device is expected to lose
+ * power abruptly. This is intentionally outside the protocol response path:
+ * a successful operation has already been made crash-consistent before its
+ * response is emitted. */
+static void durability_barrier(void) {
+    sync();
 }
 
 static size_t get_info(uint8_t *out, size_t cap) {
@@ -124,57 +236,100 @@ static size_t get_info(uint8_t *out, size_t cap) {
         0x01, 0x81, 0x68, 'F','I','D','O','_','2','_','0',
         0x03, 0x50,
         0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0x04, 0xa3,
-        0x64, 'p','l','a','t', 0xf4,
+        0x04, 0xa4,
+        /* Canonical CBOR map ordering: shorter text keys precede longer
+         * keys, then keys are byte-wise lexical. Java's CBOR encoder emits
+         * this order and Chromium rejects non-canonical options maps. */
         0x62, 'r','k', 0xf5,
         0x62, 'u','p', 0xf5,
+        0x64, 'p','l','a','t', 0xf4,
+        /* Match the Java reference's complete PIN capability tuple. The
+         * value false means PIN is not configured; protocol 1 is supported. */
+        0x69, 'c','l','i','e','n','t','P','i','n', 0xf5,
         0x05, 0x19, 0x04, 0xb0,
         0x06, 0x81, 0x01,
         0x09, 0x81, 0x63, 'u','s','b'
     };
     if (cap < sizeof info) return 0;
     memcpy(out, info, sizeof info);
+    memcpy(out + 14, device_aaguid, 16);
     return sizeof info;
 }
 
 static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
-                         struct pifido_store *store, const char *store_path) {
-    uint8_t response[256];
+                         struct pifido_store *store, const char *store_path,
+                         struct pifido_pin_state *pin_state) {
+    /* Packed attestation includes the certificate chain and signature, so a
+     * registration response is substantially larger than a small CTAP status
+     * response. Keep enough room for the full Java-compatible response. */
+    uint8_t response[4096];
     size_t r = 0;
     if (n == 0) { response[0] = CTAP2_ERR_INVALID_CBOR; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
     if (p[0] == 0x04) {
         r = get_info(response + 1, sizeof response - 1);
         if (!r) return -1;
         response[0] = 0;
+        log_event("CTAP getInfo status=0 response_bytes=%zu", r);
         return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
     }
     if (p[0] == 0x02) {
+        int user_verified = 0;
+        uint8_t pin_status = pifido_pin_check_request(pin_state, p[0], p + 1, n - 1,
+                                                      &user_verified);
+        if (pin_status != 0) {
+            log_event("CTAP getAssertion PIN/UV status=0x%02x", pin_status);
+            response[0] = pin_status;
+            return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
         r = 0;
         if (pifido_get_assertion(p + 1, n - 1, store, store_path,
+                                 user_verified,
                                  response + 1, sizeof response - 1, &r) == 0) {
             response[0] = 0;
+            log_event("CTAP getAssertion status=0 response_bytes=%zu", r);
             return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
         }
         response[0] = CTAP2_ERR_NO_CREDENTIALS;
+        log_event("CTAP getAssertion status=0x%02x", response[0]);
         return write_report(fd, cid, CTAPHID_CBOR, response, 1);
     }
     if (p[0] == 0x01) {
+        int user_verified = 0;
+        uint8_t pin_status = pifido_pin_check_request(pin_state, p[0], p + 1, n - 1,
+                                                      &user_verified);
+        if (pin_status != 0) {
+            log_event("CTAP makeCredential PIN/UV status=0x%02x", pin_status);
+            response[0] = pin_status;
+            return write_report(fd, cid, CTAPHID_CBOR, response, 1);
+        }
         r = 0;
-        if (pifido_make_credential(p + 1, n - 1, store, store_path,
-                                   response + 1, sizeof response - 1, &r) == 0) {
+        int make_rc = pifido_make_credential(p + 1, n - 1, store, store_path, device_aaguid,
+                                             user_verified,
+                                             response + 1, sizeof response - 1, &r);
+        if (make_rc == 0) {
             response[0] = 0;
+            log_event("CTAP makeCredential status=0 response_bytes=%zu", r);
             return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
         }
         response[0] = 0x2e;
+        log_event("CTAP makeCredential status=0x%02x internal_stage=%d", response[0], -make_rc);
         return write_report(fd, cid, CTAPHID_CBOR, response, 1);
     }
+    if (p[0] == 0x06) {
+        r = 0;
+        response[0] = pifido_client_pin_command(pin_state, p + 1, n - 1,
+                                               response + 1, sizeof response - 1, &r);
+        log_event("CTAP clientPIN status=0x%02x response_bytes=%zu", response[0], r);
+        return write_report(fd, cid, CTAPHID_CBOR, response, r + 1);
+    }
     response[0] = CTAP2_ERR_INVALID_COMMAND;
+    log_event("CTAP %s unsupported status=0x%02x", ctap_command_name(p, n), response[0]);
     return write_report(fd, cid, CTAPHID_CBOR, response, 1);
 }
 
 static int dispatch_hid(int fd, uint32_t cid, uint8_t command,
                         const uint8_t *p, size_t n, struct pifido_store *store,
-                        const char *store_path) {
+                        const char *store_path, struct pifido_pin_state *pin_state) {
     uint8_t response[7609];
     if (command == CTAPHID_INIT) {
         if (n != 8) {
@@ -184,19 +339,74 @@ static int dispatch_hid(int fd, uint32_t cid, uint8_t command,
         memcpy(response, p, 8);
         assigned_cid = allocate_cid();
         put_be32(response + 8, assigned_cid);
-        response[12] = 2; response[13] = 1; response[14] = 0;
-        response[15] = 0x04; /* CTAPHID_CAPABILITY_CBOR */
-        return write_report(fd, cid, CTAPHID_INIT, response, 16);
+        /* CTAPHID INIT replies are 17 bytes: nonce (8), CID (4), protocol
+         * version (1), major/minor/build (3), then capabilities (1).
+         * The original Java implementation emits all 17. Sending only 16
+         * placed CBOR capability in the build-version field, causing Chrome
+         * to terminate immediately after INIT. */
+        response[12] = 2;
+        response[13] = 0;
+        response[14] = 0;
+        response[15] = 0;
+        /* Preserve the Java implementation's exact capability byte. Its
+         * BitSet-based encoder emits 0x06, and Chrome compatibility depends
+         * on that historical wire behavior. */
+        response[16] = 0x06;
+        log_event("CTAPHID INIT response assigned_cid=%08x capabilities=%02x",
+                  assigned_cid, response[16]);
+        return write_report(fd, cid, CTAPHID_INIT, response, 17);
     }
     if (command == CTAPHID_PING)
         return write_report(fd, cid, CTAPHID_PING, p, n);
     if (command == CTAPHID_MSG) {
-        uint8_t msg[2048];
-        size_t m = u2f_apdu(msg, sizeof msg, p, n);
-        return m ? write_report(fd, cid, CTAPHID_MSG, msg, m) : -1;
+        /* Chromium may probe or use the CTAP1/U2F path even after CTAP2
+         * getInfo. The Java reference dispatches MSG to U2fHandler and
+         * returns a response with the MSG command, not a CTAPHID error. */
+        uint8_t u2f_response[2048];
+        size_t u2f_len = 0;
+        if (n >= 2)
+            log_event("CTAPHID MSG U2F APDU ins=0x%02x p1=0x%02x bytes=%zu",
+                      p[1], n >= 3 ? p[2] : 0, n);
+        if (pifido_u2f_apdu(p, n, store, store_path, u2f_response,
+                            sizeof u2f_response, &u2f_len) != 0) {
+            uint8_t e = CTAPHID_ERR_INVALID_PAR;
+            log_event("CTAPHID MSG U2F handler failure");
+            return write_report(fd, cid, CTAPHID_ERROR, &e, 1);
+        }
+        if (u2f_len >= 2)
+            log_event("CTAPHID MSG U2F response bytes=%zu status=0x%02x%02x",
+                      u2f_len, u2f_response[u2f_len - 2], u2f_response[u2f_len - 1]);
+        else
+            log_event("CTAPHID MSG U2F response bytes=%zu", u2f_len);
+        /* Safe structural diagnostics for registration responses. Do not log
+         * key material, certificates, signatures, or APDU payload bytes. */
+        if (n >= 2 && p[1] == 0x01 && u2f_len >= 99) {
+            size_t key_handle_len = u2f_response[66];
+            size_t cert_offset = 67 + key_handle_len;
+            int cert_header_ok = cert_offset < u2f_len - 2 &&
+                                 u2f_response[0] == 0x05 &&
+                                 u2f_response[1] == 0x04 &&
+                                 u2f_response[cert_offset] == 0x30;
+            log_event("CTAPHID MSG U2F registration structure reserved=0x%02x pubkey_prefix=0x%02x key_handle_len=%zu cert_offset=%zu cert_header=%s",
+                      u2f_response[0], u2f_response[1], key_handle_len,
+                      cert_offset, cert_header_ok ? "ok" : "invalid");
+            if (cert_header_ok) {
+                const unsigned char *cert_cursor = u2f_response + cert_offset;
+                X509 *certificate = d2i_X509(NULL, &cert_cursor,
+                                              (long)(u2f_len - cert_offset - 2));
+                size_t cert_len = certificate ? (size_t)(cert_cursor - (u2f_response + cert_offset)) : 0;
+                size_t signature_len = cert_len <= u2f_len - cert_offset - 2
+                    ? u2f_len - cert_offset - 2 - cert_len : 0;
+                log_event("CTAPHID MSG U2F DER cert_parse=%s cert_bytes=%zu signature_bytes=%zu signature_prefix=0x%02x",
+                          certificate ? "ok" : "invalid", cert_len, signature_len,
+                          signature_len ? u2f_response[cert_offset + cert_len] : 0);
+                X509_free(certificate);
+            }
+        }
+        return write_report(fd, cid, CTAPHID_MSG, u2f_response, u2f_len);
     }
     if (command == CTAPHID_CBOR)
-        return dispatch_cbor(fd, cid, p, n, store, store_path);
+        return dispatch_cbor(fd, cid, p, n, store, store_path, pin_state);
     {
         uint8_t e = CTAPHID_ERR_INVALID_CMD;
         return write_report(fd, cid, CTAPHID_ERROR, &e, 1);
@@ -249,7 +459,7 @@ int main(int argc, char **argv) {
             cbor_write_uint(&w, 3) != 0 || cbor_write_array_len(&w, 1) != 0 ||
             cbor_write_map_len(&w, 1) != 0 || cbor_write_uint(&w, 2) != 0 ||
             cbor_write_bytes(&w, c->credential_id, c->credential_id_len) != 0) return 1;
-        if (pifido_get_assertion(request, w.pos, &store, argv[2], response,
+        if (pifido_get_assertion(request, w.pos, &store, argv[2], 0, response,
                                  sizeof response, &response_len) != 0) return 1;
         printf("assertion response %zu bytes\n", response_len);
         return 0;
@@ -262,7 +472,7 @@ int main(int argc, char **argv) {
            cbor_write_uint(&w,2)||cbor_write_map_len(&w,1)||cbor_write_uint(&w,1)||cbor_write_text(&w,"native.test",11)||
            cbor_write_uint(&w,3)||cbor_write_map_len(&w,1)||cbor_write_uint(&w,1)||cbor_write_bytes(&w,uid,sizeof uid)||
            cbor_write_uint(&w,4)||cbor_write_array_len(&w,1)||cbor_write_map_len(&w,1)||cbor_write_uint(&w,3)||cbor_write_int(&w,-7)) return 1;
-        if(pifido_make_credential(request,w.pos,&store,argv[2],response,sizeof response,&response_len)!=0) return 1;
+        if(pifido_make_credential(request,w.pos,&store,argv[2],device_aaguid,0,response,sizeof response,&response_len)!=0) return 1;
         if(pifido_store_load(argv[2],&store)!=0 || store.count == 0) return 1;
         printf("makeCredential response %zu bytes; credentials=%zu\n", response_len, store.count);
         return 0;
@@ -273,20 +483,66 @@ int main(int argc, char **argv) {
     }
     int fd = open(argv[2], O_RDWR | O_CLOEXEC);
     if (fd < 0) { perror("open HID endpoint"); return 1; }
+    const char *log_path = getenv("PIFIDO_LOG");
+    if (!log_path) log_path = "/data/log.log";
+    log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_DSYNC, 0600);
+    if (log_fd < 0) {
+        dprintf(STDERR_FILENO, "cannot open diagnostic log %s: %s\n", log_path, strerror(errno));
+    } else {
+        (void)fchmod(log_fd, 0600);
+    }
+    console_fd = open("/dev/console", O_WRONLY | O_CLOEXEC | O_NOCTTY);
+    log_event("authenticator started hid=%s", argv[2]);
     struct hid_state s = { .cid = CTAPHID_BROADCAST_CID };
     const char *store_path = getenv("PIFIDO_STORE");
     if (!store_path) store_path = "/data/pifido/credentials.json";
     struct pifido_store store;
-    if (pifido_store_load(store_path, &store) != 0) memset(&store, 0, sizeof store);
+    if (ensure_store_file(store_path) != 0)
+        log_event("credential store create failed path=%s", store_path);
+    if (pifido_store_load(store_path, &store) != 0) {
+        memset(&store, 0, sizeof store);
+        log_event("credential store load failed; starting empty");
+    } else {
+        log_event("credential store loaded count=%zu", store.count);
+    }
+    char aaguid_path[512];
+    const char *aaguid_env = getenv("PIFIDO_AAGUID");
+    if (aaguid_env) snprintf(aaguid_path, sizeof aaguid_path, "%s", aaguid_env);
+    else snprintf(aaguid_path, sizeof aaguid_path, "/data/pifido/aaguid.bin");
+    if (load_or_create_aaguid(aaguid_path) != 0) {
+        log_event("AAGUID load/create failed path=%s", aaguid_path);
+        close(fd);
+        return 1;
+    }
+    struct pifido_pin_state pin_state;
+    if (pifido_pin_init(&pin_state, "/data/pifido/pin.bin", default_pin_hash) != 0) {
+        log_event("PIN state load/init failed; authenticator stopping");
+        close(fd);
+        if (log_fd >= 0) close(log_fd);
+        if (console_fd >= 0) close(console_fd);
+        return 1;
+    }
+    log_event("CTAP clientPIN protocol 1 ready; configured=%s retries=%u",
+              pin_state.retries ? "yes" : "blocked", pin_state.retries);
     uint8_t report[HID_REPORT_SIZE];
     for (;;) {
         ssize_t n = read(fd, report, sizeof report);
-        if (n != HID_REPORT_SIZE) { if (errno == EINTR) continue; break; }
+        if (n != HID_REPORT_SIZE) {
+            if (errno == EINTR) continue;
+            log_event("RX failure bytes=%ld errno=%d (%s)", (long)n, errno, strerror(errno));
+            break;
+        }
         uint32_t cid = be32(report);
         uint8_t type = report[4];
         if (type & 0x80) {
             uint16_t len = ((uint16_t)report[5] << 8) | report[6];
-            if (len > sizeof s.payload || (cid != s.cid && cid != CTAPHID_BROADCAST_CID)) continue;
+            log_event("RX initial cid=%08x cmd=%s(0x%02x) declared=%u header=%02x%02x%02x%02x%02x%02x%02x payload=<redacted>",
+                      cid, hid_command_name(type), type, len,
+                      report[0], report[1], report[2], report[3], report[4], report[5], report[6]);
+            if (len > sizeof s.payload || (cid != s.cid && cid != CTAPHID_BROADCAST_CID)) {
+                log_event("RX rejected cid=%08x expected_cid=%08x declared=%u", cid, s.cid, len);
+                continue;
+            }
             if (cid == CTAPHID_BROADCAST_CID && type == CTAPHID_INIT)
                 s.cid = CTAPHID_BROADCAST_CID;
             else if (cid != CTAPHID_BROADCAST_CID)
@@ -296,20 +552,39 @@ int main(int argc, char **argv) {
             s.received = (uint16_t)((len < 57) ? len : 57);
             s.next_seq = 0;
             memcpy(s.payload, report + 7, s.received);
-            if (s.received == s.expected)
-                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path);
+            if (s.received == s.expected) {
+                log_event("RX complete cid=%08x cmd=%s bytes=%u%s%s", s.cid,
+                          hid_command_name(s.command), s.received,
+                          s.command == CTAPHID_CBOR ? " ctap=" : "",
+                          s.command == CTAPHID_CBOR ? ctap_command_name(s.payload, s.received) : "");
+                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path, &pin_state);
+                durability_barrier();
+            }
             if (s.command == CTAPHID_INIT && assigned_cid != 0)
                 s.cid = assigned_cid;
         } else if (type == s.next_seq && s.received < s.expected) {
             size_t ncopy = s.expected - s.received;
             if (ncopy > 59) ncopy = 59;
             memcpy(s.payload + s.received, report + 5, ncopy);
+            log_event("RX continuation cid=%08x seq=%u chunk=%zu header=%02x%02x%02x%02x%02x payload=<redacted>",
+                      cid, type, ncopy, report[0], report[1], report[2], report[3], report[4]);
             s.received += (uint16_t)ncopy;
             s.next_seq++;
-            if (s.received == s.expected)
-                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path);
+            if (s.received == s.expected) {
+                log_event("RX complete cid=%08x cmd=%s bytes=%u%s%s", s.cid,
+                          hid_command_name(s.command), s.received,
+                          s.command == CTAPHID_CBOR ? " ctap=" : "",
+                          s.command == CTAPHID_CBOR ? ctap_command_name(s.payload, s.received) : "");
+                (void)dispatch_hid(fd, s.cid, s.command, s.payload, s.received, &store, store_path, &pin_state);
+                durability_barrier();
+            }
+        } else {
+            log_event("RX invalid continuation cid=%08x seq=%u expected=%u received=%u/%u",
+                      cid, type, s.next_seq, s.received, s.expected);
         }
     }
+    pifido_pin_destroy(&pin_state);
     close(fd);
+    if (console_fd >= 0) close(console_fd);
     return 1;
 }

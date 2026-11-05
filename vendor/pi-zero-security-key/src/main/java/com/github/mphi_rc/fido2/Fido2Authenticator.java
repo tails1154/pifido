@@ -41,8 +41,13 @@ public class Fido2Authenticator {
 
 	public void start() throws IOException {
 		while (true) {
+			System.err.println("PiFIDO Java: waiting for CTAPHID packet");
 			RawMessage request = requests.readMessage();
+			System.err.println("PiFIDO Java: received CTAPHID " + request.command()
+					+ " payload_bytes=" + request.payload().length);
 			RawMessage response = usbHidHander.handle(request);
+			System.err.println("PiFIDO Java: sending CTAPHID " + response.command()
+					+ " payload_bytes=" + response.payload().length);
 			responses.accept(response);
 		}
 	}

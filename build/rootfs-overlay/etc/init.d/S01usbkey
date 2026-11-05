@@ -1,0 +1,153 @@
+#!/bin/sh
+set -eu
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+PERSIST=/data
+G=/sys/kernel/config/usb_gadget/fido2
+EARLY_LOG=/run/pifido-boot.log
+LOG=/data/pifido-boot.log
+
+mkdir -p /proc /sys /dev /run /data
+mountpoint -q /proc || mount -t proc proc /proc || true
+mountpoint -q /sys || mount -t sysfs sysfs /sys || true
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev || true
+mkdir -p /sys/kernel/config
+mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config || true
+touch "$EARLY_LOG"
+chmod 0600 "$EARLY_LOG"
+echo "USB FIDO2 init $(date 2>/dev/null || true)" >>"$EARLY_LOG"
+early_line() {
+    printf '%s\n' "$1" >>"$EARLY_LOG" 2>/dev/null || true
+    printf 'PiFIDO: %s\n' "$1" >/dev/console 2>/dev/null || true
+}
+log_line() {
+    uptime_s=$(cut -d ' ' -f 1 /proc/uptime 2>/dev/null || echo '?')
+    printf '[%ss] %s\n' "$uptime_s" "$1" >>"$LOG" 2>/dev/null || true
+    printf 'PiFIDO [%ss]: %s\n' "$uptime_s" "$1" >/dev/console 2>/dev/null || true
+}
+trap 'rc=$?; log_line "INIT EXIT line=$LINENO rc=$rc"; while :; do sleep 60; done' EXIT
+early_line 'pseudo-filesystems ready'
+
+# The second SD partition is persistent credential storage. Continue only with
+# a volatile store if it is unavailable; never silently claim persistence.
+STORAGE_MOUNTED=
+for i in $(seq 1 30); do
+    early_line "storage attempt=$i present=$([ -b /dev/mmcblk0p2 ] && echo yes || echo no)"
+    if [ -b /dev/mmcblk0p2 ]; then
+        if mount -t ext4 -o rw,noatime /dev/mmcblk0p2 /data 2>/run/pifido-storage.err; then
+            STORAGE_MOUNTED=1
+            break
+        fi
+    fi
+    echo "waiting for /dev/mmcblk0p2 (attempt $i)" >>"$EARLY_LOG"
+    sleep 1
+done
+if [ -z "${STORAGE_MOUNTED:-}" ]; then
+    echo 'persistent storage mount failed; using volatile /data' >>"$EARLY_LOG"
+    mkdir -p /data
+else
+    # Preserve diagnostics from the initramfs side after the mount hides /data.
+    cat /run/pifido-boot.log >>/data/pifido-boot.log 2>/dev/null || true
+    cat /run/pifido-storage.err >>/data/pifido-storage.err 2>/dev/null || true
+fi
+mkdir -p /data/pifido
+chmod 0700 /data/pifido
+touch "$LOG"
+chmod 0600 "$LOG"
+dmesg > /data/dmesg.log 2>&1 || true
+chmod 0600 /data/dmesg.log 2>/dev/null || true
+log_line "persistent_storage=${STORAGE_MOUNTED:-0}"
+log_line 'loading libcomposite and dwc2'
+
+modprobe libcomposite >>"$LOG" 2>&1 || true
+log_line 'libcomposite load complete'
+modprobe dwc2 >>"$LOG" 2>&1 || true
+log_line 'dwc2 load complete'
+UDC=""
+for i in $(seq 1 20); do
+    UDC=$(ls -1 /sys/class/udc 2>/dev/null | head -n 1 || true)
+    log_line "UDC attempt=$i value=${UDC:-none}"
+    [ -n "$UDC" ] && break
+    sleep 1
+done
+if [ -z "$UDC" ]; then
+    log_line 'USB FIDO2: no UDC found'
+    while :; do sleep 30; done
+fi
+log_line 'creating ConfigFS HID and CDC-ACM functions'
+
+# Detach only stale ConfigFS gadgets, then create one HID CTAPHID function.
+for old_udc in /sys/kernel/config/usb_gadget/*/UDC; do
+    [ -f "$old_udc" ] || continue
+    [ -s "$old_udc" ] && printf '\n' >"$old_udc" || true
+done
+mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" \
+    "$G/functions/hid.usb0" "$G/functions/acm.usb0"
+log_line 'USB serial diagnostics enabled'
+log_line 'ConfigFS directories created'
+cfg_attr() {
+    attr=$1
+    value=$2
+    if printf '%s' "$value" >"$attr" 2>>"$LOG"; then
+        log_line "attribute ok $attr"
+    else
+        rc=$?
+        log_line "attribute FAILED $attr rc=$rc"
+    fi
+}
+# Match the previously working ConfigFS setup order: complete the USB device
+# descriptor before creating strings or linking functions.
+cfg_attr "$G/idVendor" 0x1209
+cfg_attr "$G/idProduct" 0xF1D0
+cfg_attr "$G/bcdDevice" 0x0001
+cfg_attr "$G/bcdUSB" 0x0200
+cfg_attr "$G/bDeviceProtocol" 0x00
+cfg_attr "$G/bDeviceSubClass" 0x00
+cfg_attr "$G/bMaxPacketSize0" 0x08
+cfg_attr "$G/strings/0x409/serialnumber" 'Tails1154-FIDO2-0001'
+log_line 'serialnumber written'
+cfg_attr "$G/strings/0x409/manufacturer" 'Tails1154'
+log_line 'manufacturer written'
+cfg_attr "$G/strings/0x409/product" 'FIDO2'
+log_line 'product written'
+cfg_attr "$G/configs/c.1/strings/0x409/configuration" 'FIDO2 HID'
+log_line 'configuration string written'
+cfg_attr "$G/configs/c.1/MaxPower" 250
+log_line 'MaxPower written'
+if printf '\006\320\361\011\001\241\001\011\040\025\000\046\377\000\165\010\225\100\201\002\011\041\025\000\046\377\000\165\010\225\100\221\002\300' >"$G/functions/hid.usb0/report_desc" 2>>"$LOG"; then
+    log_line 'HID report descriptor written'
+else
+    log_line 'HID report descriptor FAILED'
+fi
+cfg_attr "$G/functions/hid.usb0/protocol" 0
+cfg_attr "$G/functions/hid.usb0/subclass" 0
+cfg_attr "$G/functions/hid.usb0/report_length" 64
+(cd "$G" && ln -sf functions/hid.usb0 configs/c.1/hid.usb0)
+log_line 'HID function linked'
+(cd "$G" && ln -sf functions/acm.usb0 configs/c.1/acm.usb0)
+log_line 'ACM function linked'
+printf '%s' "$UDC" >"$G/UDC"
+log_line "FIDO2 HID attached UDC=$UDC"
+
+# Do not write synchronously to ttyGS0. The background stream exposes boot
+# and native diagnostics after the host opens the serial port.
+: > /data/pifido-native.log
+tail -f "$LOG" /data/pifido-native.log /data/pifido-native-console.log >/dev/ttyGS0 2>/dev/null &
+
+if [ -x /usr/bin/pifido-native ]; then
+    log_line 'native C authenticator selected'
+    PIFIDO_LOG=/data/pifido-native.log PIFIDO_STORE=/data/pifido/credentials.json \
+        PIFIDO_AUTO_UP=1 /usr/bin/pifido-native --hid /dev/hidg0 \
+        >/data/pifido-native-console.log 2>&1 &
+    NATIVE_PID=$!
+    sleep 1
+    if kill -0 "$NATIVE_PID" 2>/dev/null; then
+        log_line "native C authenticator running pid=$NATIVE_PID"
+    else
+        log_line "native C authenticator exited pid=$NATIVE_PID"
+    fi
+else
+    log_line 'native C authenticator unavailable; HID gadget remains idle'
+fi
+
+while :; do sleep 60; done

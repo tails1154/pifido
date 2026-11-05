@@ -1,0 +1,16 @@
+[Unit]
+Description=Piannaple touchscreen home screen
+After=graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=tails1154
+WorkingDirectory=/opt/piannaple
+Environment=KIVY_NO_ARGS=1
+ExecStart=/usr/bin/python3 /opt/piannaple/home_screen.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

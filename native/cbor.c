@@ -53,6 +53,12 @@ int cbor_skip(struct cbor_reader *r) {
         for (uint64_t i = 0; i < n * 2; ++i) if (cbor_skip(r) != 0) return -1;
         return 0;
     }
+    /* Simple values and floating-point values have already had their
+     * additional bytes consumed by head().  In particular, CTAP2 request
+     * option maps contain CBOR booleans such as rk and uv; rejecting major 7
+     * here incorrectly surfaced as CTAP2_ERR_INVALID_CBOR during PIN-backed
+     * makeCredential requests. */
+    if (major == 7) return 0;
     return -1;
 }
 

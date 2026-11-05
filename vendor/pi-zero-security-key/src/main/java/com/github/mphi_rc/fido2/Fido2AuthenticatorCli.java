@@ -12,7 +12,9 @@ public class Fido2AuthenticatorCli {
 	public static void main(String[] args) throws Exception {
 
 		ConfigurationFile config = ConfigurationFile.defaultPath();
+		System.err.println("PiFIDO Java: credential configuration loaded");
 		config.persistToDiskSync();
+		System.err.println("PiFIDO Java: credential configuration persisted");
 
 		UsbHidGadget fido2Gadget = ImmutableUsbHidGadget.builder()
 				.name(config.usbGadgetName())
@@ -26,14 +28,15 @@ public class Fido2AuthenticatorCli {
 				.maxPowerMilliamps(250)
 				.build();
 
-		ConfigFs configFs = ConfigFs.ofDefault();
-		configFs.initialize(fido2Gadget);
-		// Keep the boot-critical authenticator limited to the standard FIDO HID
-		// interface.  The optional FunctionFS/WebUSB management interface is not
-		// allowed to prevent CTAPHID from binding to the UDC.
-		configFs.attach(fido2Gadget, config.usbDeviceController());
+		if (!Boolean.getBoolean("pifido.externalGadget")) {
+			ConfigFs configFs = ConfigFs.ofDefault();
+			configFs.initialize(fido2Gadget);
+			configFs.attach(fido2Gadget, config.usbDeviceController());
+		}
 
+		System.err.println("PiFIDO Java: opening HID transport");
 		Fido2Authenticator authenticator = new Fido2Authenticator(config);
+		System.err.println("PiFIDO Java: HID transport open; waiting for CTAPHID");
 		authenticator.start();
 	}
 }

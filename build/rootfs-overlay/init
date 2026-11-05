@@ -1,5 +1,4 @@
 #!/bin/sh
-# Keep PID 1 alive even if the authenticator process fails; never let a
-# diagnostic/startup error trigger the kernel's "attempted to kill init" panic.
-/etc/init.d/S01pifido
+# Start the USB-only FIDO2 authenticator as the first userspace service.
+/etc/init.d/S01usbkey
 while :; do sleep 60; done

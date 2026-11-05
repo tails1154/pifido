@@ -23,6 +23,24 @@ fi
 chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/etc/init.d/S01pifido"
 chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/usr/lib/pifido/setup-hid-gadget"
 chmod 0755 "$BUILDROOT_DIR/board/pifido-overlay/init"
+# The firmware package can retain an older config.txt between incremental
+# builds. Seed the image-side copy before Buildroot's post-image hook runs so
+# it contains exactly one kernel selector.
+mkdir -p "$BUILDROOT_DIR/output/images/rpi-firmware"
+install -D -m 0644 "$PROJECT_ROOT/build/rpi-config.txt" \
+    "$BUILDROOT_DIR/output/images/rpi-firmware/config.txt"
+sed -i '/^kernel=/d' "$BUILDROOT_DIR/output/images/rpi-firmware/config.txt"
+printf '%s\n' 'kernel=kernel.img' >>"$BUILDROOT_DIR/output/images/rpi-firmware/config.txt"
+# A previous image generation may have cached a config referring to
+# kernel.img. Keep the generated boot layout aligned with Buildroot's zImage.
+if [ -f "$BUILDROOT_DIR/output/images/genimage.cfg" ]; then
+    sed -i 's/"kernel.img"/"zImage"/g' "$BUILDROOT_DIR/output/images/genimage.cfg"
+    sed -i '/^[[:space:]]*"",[[:space:]]*$/d' "$BUILDROOT_DIR/output/images/genimage.cfg"
+fi
+# Buildroot's firmware helper may append its default kernel=kernel.img line;
+# keep that name as a symlink so post-image generation always sees the current
+# zImage without duplicating the kernel.
+ln -sfn zImage "$BUILDROOT_DIR/output/images/kernel.img"
 
 make -C "$BUILDROOT_DIR" raspberrypi0w_defconfig
 cat >> "$BUILDROOT_DIR/.config" <<EOF
@@ -43,6 +61,11 @@ BR2_TARGET_GENERIC_ISSUE="PiFIDO"
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$PROJECT_ROOT/build/kernel-minimal.fragment"
 EOF
 make -C "$BUILDROOT_DIR" olddefconfig
+# Buildroot's local-package stamp does not notice edits to the source tree.
+# Explicitly rebuild only the native authenticator so incremental image
+# builds cannot silently embed a stale binary; kernel and toolchain objects
+# remain cached.
+make -C "$BUILDROOT_DIR" pifido-native-rebuild
 make -C "$BUILDROOT_DIR" -j"$(nproc)"
 
 # Buildroot may retain its stock firmware configuration when the source file
@@ -53,6 +76,12 @@ install -D -m 0644 "$PROJECT_ROOT/build/rpi-config.txt" \
     "$BUILDROOT_DIR/output/images/rpi-firmware/config.txt"
 install -D -m 0644 "$PROJECT_ROOT/build/cmdline-fast.txt" \
     "$BUILDROOT_DIR/output/images/rpi-firmware/cmdline.txt"
+# The firmware config is installed again after Buildroot's post-image step;
+# ensure the Raspberry Pi firmware still selects the kernel image. Without
+# this line board/raspberrypi/post-image.sh emits an empty genimage entry and
+# tries to copy the entire input directory into boot.vfat.
+sed -i '/^kernel=/d' "$BUILDROOT_DIR/output/images/rpi-firmware/config.txt"
+printf '%s\n' 'kernel=kernel.img' >>"$BUILDROOT_DIR/output/images/rpi-firmware/config.txt"
 
 # Keep the kernel small: the complete native runtime is supplied as one
 # external initramfs. Do not append the historical Java update archive: a
@@ -60,6 +89,10 @@ install -D -m 0644 "$PROJECT_ROOT/build/cmdline-fast.txt" \
 cp "$BUILDROOT_DIR/output/images/rootfs.cpio.gz" \
     "$BUILDROOT_DIR/output/images/pifido-full.cpio.gz"
 GENIMAGE_CFG="$BUILDROOT_DIR/output/images/genimage.cfg"
+# Older generated configs can retain an empty boot-file entry. genimage treats
+# it as the entire input directory, exhausts the FAT image, and fails with a
+# misleading "Disk full" error. Remove only that invalid entry.
+sed -i '/^[[:space:]]*"",[[:space:]]*$/d' "$GENIMAGE_CFG"
 if ! grep -q 'pifido-full.cpio.gz' "$GENIMAGE_CFG"; then
     sed -i '/"zImage",/a\			"pifido-full.cpio.gz",' "$GENIMAGE_CFG"
 fi
