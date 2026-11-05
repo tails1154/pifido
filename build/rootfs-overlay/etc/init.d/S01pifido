@@ -69,6 +69,7 @@ echo 'PiFIDO init: starting authenticator' >/dev/console 2>/dev/null || true
 LOG="$DATA/java.log"
 /usr/lib/zulu/bin/java -Xms16m -Xmx64m -XX:TieredStopAtLevel=1 \
     -Djava.io.tmpdir=/tmp -Dpifido.requireButton=false \
+    -Dpifido.allowDefaultPin=true \
     -Dorg.slf4j.simpleLogger.defaultLogLevel=trace \
     -Dorg.slf4j.simpleLogger.showDateTime=true \
     -Dorg.slf4j.simpleLogger.showThreadName=true \

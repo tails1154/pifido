@@ -77,6 +77,13 @@ public class ConfigurationFile implements Configuration {
 				Files.setPosixFilePermissions(configFile, PosixFilePermissions.fromString("rw-------"));
 			}
 			this.config = readFromDisk();
+			// The headless Pi image has no first-boot PIN-change UI yet.  Keep the
+			// documented development PIN (1234) usable instead of making Chrome
+			// wait forever for an interaction that cannot be completed.
+			if (Boolean.getBoolean("pifido.allowDefaultPin") && this.config.pinChangeRequired()) {
+				this.config = ImmutableConfiguration.builder().from(this.config).pinChangeRequired(false).build();
+				persistToDiskSync();
+			}
 		} catch (IOException e) {
 			throw new IllegalStateException("Credential store is unavailable", e);
 		}
