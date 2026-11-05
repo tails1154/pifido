@@ -5,11 +5,15 @@ CFLAGS ?= -O2 -Wall -Wextra -Wpedantic -std=c11
 
 all: pifido-native
 
-pifido-native: pifido_native.c
-	$(CC) $(CFLAGS) -o $@ $<
+pifido-native: pifido_native.c store.c store.h
+	$(CC) $(CFLAGS) -o $@ pifido_native.c store.c
 
-test: pifido-native
+test: pifido-native store-test
 	./pifido-native --self-test
+	./store-test
+
+store-test: store_test.c store.c store.h
+	$(CC) $(CFLAGS) -o $@ store_test.c store.c
 
 clean:
-	rm -f pifido-native
+	rm -f pifido-native store-test
