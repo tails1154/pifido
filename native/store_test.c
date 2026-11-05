@@ -28,6 +28,8 @@ int main(void) {
     if (inc != 0 || count != 8) return 1;
     int reload = pifido_store_load(copy, &s);
     if (reload != 0 || s.credentials[0].signature_count != 8) return 1;
+    if (pifido_store_delete_credential(copy, new_id, sizeof new_id) != 0) return 1;
+    if (pifido_store_load(copy, &s) != 0 || s.count != 1) return 1;
     unlink(copy);
     puts("credential store self-test passed");
     return 0;

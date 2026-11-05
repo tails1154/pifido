@@ -360,9 +360,17 @@ int pifido_store_delete_credential(const char *path, const uint8_t *credential_i
 
     /* Credential objects are emitted with a four-space closing delimiter;
      * locate that delimiter rather than the nested keyPair closing brace. */
-    char *start = id;
-    while (start > json && !(start[0] == '{' && start > json && start[-1] == '\n')) --start;
-    if (start == json) { free(json); return -1; }
+    char *start = NULL;
+    for (char *scan = json; ; ) {
+        char *candidate = strstr(scan, "\n    {");
+        if (!candidate || candidate >= id) break;
+        start = candidate + 1;
+        scan = candidate + 1;
+    }
+    if (!start) {
+        start = strchr(json, '{');
+        if (!start || start >= id) { free(json); return -1; }
+    }
     char *end = strstr(id, "\n    }");
     if (!end) { free(json); return -1; }
     end += strlen("\n    }");
