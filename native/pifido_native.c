@@ -538,9 +538,12 @@ static int dispatch_cbor(int fd, uint32_t cid, const uint8_t *p, size_t n,
                 uint64_t key; if (cbor_read_uint(&pr, &key) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
                 if (key == 2) {
                     size_t dn; if (cbor_read_map_len(&pr, &dn) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
-                    for (size_t j = 0; j < dn; ++j) { uint64_t dk; if (cbor_read_uint(&pr, &dk) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
-                        if (dk == 2) { if (cbor_read_bytes(&pr, &credential_id, &credential_id_len) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); } }
-                        else if (cbor_skip(&pr) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                    for (size_t j = 0; j < dn; ++j) {
+                        const char *dk; size_t dkl;
+                        if (cbor_read_text(&pr, &dk, &dkl) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                        if (dkl == 2 && memcmp(dk, "id", 2) == 0) {
+                            if (cbor_read_bytes(&pr, &credential_id, &credential_id_len) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
+                        } else if (cbor_skip(&pr) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
                     }
                 } else if (cbor_skip(&pr) != 0) { response[0] = 0x12; return write_report(fd, cid, CTAPHID_CBOR, response, 1); }
             }
