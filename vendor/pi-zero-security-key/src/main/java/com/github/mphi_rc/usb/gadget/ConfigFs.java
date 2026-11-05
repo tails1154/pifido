@@ -70,13 +70,16 @@ public class ConfigFs {
 		writeConfig(functionRoot, "report_length", String.valueOf(gadget.hidReportLength()));
 		writeConfig(functionRoot, "report_desc", gadget.hidDescriptor());
 
-		Files.createSymbolicLink(gadgetRoot.resolve("configs/c.1/hid.usb0"),
-				gadgetRoot.resolve("functions/hid.usb0"));
+		Path hidLink = gadgetRoot.resolve("configs/c.1/hid.usb0");
+		Files.deleteIfExists(hidLink);
+		Files.createSymbolicLink(hidLink, gadgetRoot.resolve("functions/hid.usb0"));
 
 		// Separate vendor-class FunctionFS interface for WebUSB management.
 		Path management = gadgetRoot.resolve("functions/ffs.authui");
 		if (Files.notExists(management)) Files.createDirectories(management);
-		Files.createSymbolicLink(gadgetRoot.resolve("configs/c.1/ffs.authui"), management);
+		Path managementLink = gadgetRoot.resolve("configs/c.1/ffs.authui");
+		Files.deleteIfExists(managementLink);
+		Files.createSymbolicLink(managementLink, management);
 	}
 
 	public void attach(UsbHidGadget gadget, UsbDeviceController driver) throws IOException {

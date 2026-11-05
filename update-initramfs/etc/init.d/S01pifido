@@ -1,0 +1,74 @@
+#!/bin/sh
+set -u
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+DATA=/data/pifido
+
+echo 'PiFIDO init: mounts' >/dev/console 2>/dev/null || true
+mountpoint -q /sys || mount -t sysfs sysfs /sys || true
+mountpoint -q /proc || mount -t proc proc /proc || true
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev || true
+mountpoint -q /sys/kernel/config || {
+    mkdir -p /sys/kernel/config
+    mount -t configfs configfs /sys/kernel/config || true
+}
+
+# Remove any stale composite gadget left by an interrupted authenticator start.
+# ConfigFS keeps an unbound gadget around after a process crash; leaving its
+# function links in place makes the next bind fail with EBUSY/EINVAL.
+for OLD in /sys/kernel/config/usb_gadget/*; do
+    [ -d "$OLD" ] || continue
+    [ -e "$OLD/UDC" ] && printf '' > "$OLD/UDC" 2>/dev/null || true
+    [ -L "$OLD/configs/c.1/hid.usb0" ] && unlink "$OLD/configs/c.1/hid.usb0" 2>/dev/null || true
+    [ -L "$OLD/configs/c.1/ffs.authui" ] && unlink "$OLD/configs/c.1/ffs.authui" 2>/dev/null || true
+    rmdir "$OLD/configs/c.1/strings/0x409" 2>/dev/null || true
+    rmdir "$OLD/configs/c.1/strings" 2>/dev/null || true
+    rmdir "$OLD/configs/c.1" 2>/dev/null || true
+    rmdir "$OLD/functions/hid.usb0" 2>/dev/null || true
+    rmdir "$OLD/functions/ffs.authui" 2>/dev/null || true
+    rmdir "$OLD/functions" 2>/dev/null || true
+    rmdir "$OLD/strings/0x409" 2>/dev/null || true
+    rmdir "$OLD/strings" 2>/dev/null || true
+    rmdir "$OLD" 2>/dev/null || true
+done
+
+mount -a 2>/dev/null || true
+mkdir -p /dev/ffs-authui
+umount /dev/ffs-authui 2>/dev/null || true
+mount -t functionfs authui /dev/ffs-authui || true
+mkdir -p /data
+if ! mountpoint -q /data; then
+    for i in $(seq 1 30); do
+        if [ -b /dev/mmcblk0p2 ] && mount -t ext4 -o noatime,commit=1 /dev/mmcblk0p2 /data 2>/tmp/pifido-mount.err; then
+            break
+        fi
+        sleep 1
+    done
+fi
+if ! mountpoint -q /data; then
+    echo 'PiFIDO init: DATA MOUNT FAILED' >/dev/console 2>/dev/null || true
+    cat /tmp/pifido-mount.err >/dev/console 2>/dev/null || true
+else
+    echo 'PiFIDO init: data mounted' >/dev/console 2>/dev/null || true
+fi
+
+mkdir -p "$DATA"
+chmod 700 "$DATA"
+
+while :; do
+    UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+    if [ -n "$UDC" ]; then
+        echo "PiFIDO init: UDC=$UDC" >/dev/console 2>/dev/null || true
+        break
+    fi
+    echo 'PiFIDO init: waiting for USB device controller' >/dev/console 2>/dev/null || true
+    sleep 1
+done
+
+echo 'PiFIDO init: starting authenticator' >/dev/console 2>/dev/null || true
+LOG="$DATA/java.log"
+/usr/lib/zulu/bin/java -Xms16m -Xmx64m -XX:TieredStopAtLevel=1 -Djava.io.tmpdir=/tmp -Dpifido.requireButton=false -jar /usr/lib/pifido/pifido.jar >"$LOG" 2>&1
+RC=$?
+tail -60 "$LOG" >/dev/console 2>/dev/null || true
+echo "PiFIDO Java exited rc=$RC; halted for diagnostics" >/dev/console 2>/dev/null || true
+while :; do sleep 60; done
